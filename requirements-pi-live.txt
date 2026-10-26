@@ -1,0 +1,12 @@
+# Optional Raspberry Pi dependencies for live read-only CyberGear telemetry.
+#
+# These are intentionally not required for laptop/unit-test dry runs. Install
+# them only on the Pi virtual environment after the physical no-motion gate is
+# satisfied and before running telemetry with --live.
+#
+# Do not install CyberGearDashboard here. The GUI/dashboard package was present
+# in the recovered Pi venv, but TOCATL code should stay behind the safe adapter
+# boundary in src/tocatl_lowlevel/tocatl_lowlevel/cybergear_adapter.py.
+
+CyberGearDriver==0.2.0
+python-can==4.6.1

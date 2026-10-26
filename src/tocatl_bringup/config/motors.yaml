@@ -1,0 +1,4 @@
+motor_controller:
+  ros__parameters:
+    backend: mock
+    command_timeout_s: 1.0

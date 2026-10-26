@@ -1,0 +1,42 @@
+{
+  "description": "Operator-confirmed leg 1 hip and knee at their physical home stops; observation only, not three independent contact trials",
+  "date": "2026-10-23",
+  "calibration_valid": false,
+  "motors": [
+    {
+      "motor_id": 12,
+      "bus": "can1",
+      "joint": "hip_pitch",
+      "position_rad": 0.8028152895399412,
+      "range_rad": 0.0003814755474174092,
+      "samples": 6,
+      "last_sample_unix_s": 1792791648.114188,
+      "manual_identification": {
+        "confirmed_joint": "hip_pitch",
+        "away_encoder_direction": 1,
+        "home_encoder_direction": -1,
+        "method": "Operator manually backed hip away; motor 12 increased from reference; earlier part of trace showed knee nearly stationary",
+        "date": "2026-10-23",
+        "latest_observed_position_rad": 0.9102006561379419
+      }
+    },
+    {
+      "motor_id": 13,
+      "bus": "can1",
+      "joint": "knee",
+      "position_rad": 0.8752956435492489,
+      "range_rad": 0.0003814755474174092,
+      "samples": 6,
+      "last_sample_unix_s": 1792791648.114188,
+      "manual_identification": {
+        "confirmed_joint": "knee",
+        "away_encoder_direction": 1,
+        "home_encoder_direction": -1,
+        "method": "Operator backed knee away; motor 13 increased while motor 12 was stable at its recorded home reference",
+        "date": "2026-10-23",
+        "latest_observed_position_rad": 1.2827115281910437,
+        "hip_reference_rad": 0.8028152895399412
+      }
+    }
+  ]
+}

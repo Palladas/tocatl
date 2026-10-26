@@ -1,0 +1,22 @@
+# Leg 1 pitch/knee only; yaw 11 is neither homed nor enabled.
+# Captures the starting pose; seeks home before repeatability backoffs.
+# Start with /motors/home. Hardware execution remains separately opt-in.
+motor_controller:
+  ros__parameters:
+    backend: hardware
+    allow_hardware_motion: false
+    # Powered homing is opt-in; a saved result never restores session readiness.
+    allow_homing: false
+    actuation_motor_ids: [12, 13]
+    # Restrict telemetry too: wider can1 polling reproduced the ID-51 stall.
+    telemetry_motor_ids: [12, 13]
+    can_buses: [can1]
+    can0_channel: can0
+    can1_channel: can1
+    leg1_hip_can_id: 12
+    poll_period_s: 0.5
+    telemetry_timeout_s: 1.5
+    homing.method: leg1_pair
+    # Normal homing: one stable contact per joint, 0.2 rad/s, 60-second motion budget.
+    homing.verify_repeatability: false
+    homing.output_path: /home/tocatl/tocatl/config/leg1-pair-homing.json

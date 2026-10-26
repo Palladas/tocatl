@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "motors": {
+    "12": {
+      "motor_id": 12,
+      "bus": "can1",
+      "method": "legacy_impedance_contact",
+      "home_position_rad": 0.7795452811474792,
+      "contact_positions_rad": [
+        0.7795452811474792,
+        0.7795452811474792,
+        0.7795452811474792
+      ],
+      "spread_rad": 0.0,
+      "independent_reapproaches": false,
+      "stable_samples": 13,
+      "device_zero_written": false,
+      "config": {
+        "motor_id": 12,
+        "expected_stop": 0.8028152895399412,
+        "minimum": 0.7528152895399411,
+        "maximum": 0.9528152895399412,
+        "kp": 1.75,
+        "kd": 2.0,
+        "direction": -1,
+        "lead": 1.5,
+        "reference_speed": 0.2,
+        "overspeed": 0.5,
+        "effort_limit": 3.5,
+        "minimum_contact_effort": 0.5,
+        "stop_window": 0.03,
+        "settle_motion": 0.003,
+        "dwell": 0.6,
+        "timeout": 20.0,
+        "freshness": 0.25,
+        "max_temperature": 45.0
+      },
+      "completed_unix_s": 1792792312.1071303,
+      "operator_reference_rad": 0.8028152895399412,
+      "loaded_minus_operator_reference_rad": -0.02327000839246196
+    },
+    "13": {
+      "motor_id": 13,
+      "bus": "can1",
+      "method": "active_pd_endstop_search",
+      "home_position_rad": 0.7394903486686513,
+      "contact_positions_rad": [
+        0.7391088731212339,
+        0.7402532997634861,
+        0.7394903486686513
+      ],
+      "spread_rad": 0.0011444266422522276,
+      "independent_reapproaches": true,
+      "device_zero_written": false,
+      "config": {
+        "motor_id": 13,
+        "expected_stop": 0.8752956435492489,
+        "minimum": 0.2752956435492489,
+        "maximum": 1.475295643549249,
+        "kp": 1.75,
+        "kd": 2.0,
+        "direction": -1,
+        "lead": 1.5,
+        "reference_speed": 0.2,
+        "overspeed": 0.5,
+        "effort_limit": 3.5,
+        "minimum_contact_effort": 0.5,
+        "stop_window": 0.03,
+        "settle_motion": 0.003,
+        "dwell": 0.6,
+        "timeout": 90.0,
+        "freshness": 0.25,
+        "max_temperature": 45.0,
+        "backoff": 0.08726646259971647,
+        "repeatability": 0.01,
+        "phase_timeout": 25.0
+      },
+      "completed_unix_s": 1792793215.8015463,
+      "hip_hold": {
+        "motor_id": 12,
+        "position_rad": 0.793278400854506,
+        "kp": 150.0,
+        "kd": 3.0,
+        "effort_limit_nm": 3.5,
+        "deviation_limit_rad": 0.01
+      },
+      "hip_reference_rad": 0.793278400854506
+    }
+  },
+  "calibration_valid": false,
+  "knee_status": "complete: three independent active approaches with powered hip holding; loaded software reference only"
+}

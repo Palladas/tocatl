@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "motors": {
+    "23": {
+      "motor_id": 23,
+      "bus": "can0",
+      "method": "active_pd_endstop_search",
+      "initial_position_rad": 0.04406042572671076,
+      "initial_phase": "SEEK_STOP",
+      "home_position_rad": -0.09899290455481768,
+      "previous_reference_rad": 0.05245288776989376,
+      "reference_delta_rad": -0.15144579232471145,
+      "reference_within_window": false,
+      "contact_positions_rad": [
+        -0.09899290455481768
+      ],
+      "spread_rad": 0.0,
+      "independent_reapproaches": false,
+      "contact_verified": true,
+      "device_zero_written": false,
+      "config": {
+        "motor_id": 23,
+        "expected_stop": 0.05245288776989376,
+        "minimum": -12.5,
+        "maximum": 12.5,
+        "kp": 1.75,
+        "kd": 2.0,
+        "direction": -1,
+        "lead": 1.5,
+        "reference_speed": 0.2,
+        "command_torque_limit": 2.625,
+        "overspeed": 0.5,
+        "effort_limit": 3.5,
+        "minimum_contact_effort": 2.3,
+        "stop_window": 0.03,
+        "settle_motion": 0.003,
+        "dwell": 0.6,
+        "timeout": 60.0,
+        "freshness": 0.25,
+        "max_temperature": 45.0,
+        "backoff": 0.08726646259971647,
+        "repeatability": 0.01,
+        "phase_timeout": 60.0,
+        "initial_seek_timeout": 60.0,
+        "contacts_required": 1
+      },
+      "completed_unix_s": 1792983379.9132385,
+      "hip_hold": {
+        "motor_id": 22,
+        "position_rad": -1.6439688715953302,
+        "kp": 150.0,
+        "kd": 3.0,
+        "effort_limit_nm": 3.5,
+        "deviation_limit_rad": 0.01
+      },
+      "control": "native_mit_impedance_runtime_torque_limit",
+      "command_torque_limit_nm": 2.625,
+      "torque_limit_register": "0x700b",
+      "hip_reference_rad": -1.6439688715953302
+    }
+  }
+}

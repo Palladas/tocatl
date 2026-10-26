@@ -1,0 +1,19 @@
+motor_controller:
+  ros__parameters:
+    backend: hardware
+    allow_hardware_motion: false
+    allow_homing: false
+    can0_channel: can0
+    can1_channel: can1
+    poll_period_s: 0.5
+    telemetry_timeout_s: 1.5
+    homing.method: active_endstop
+    homing.motor_id: 13
+    # Old hand-set stop is a reference for the bounded search range, not a stop detector.
+    homing.expected_stop_rad: 0.8752956435492489
+    homing.min_position_rad: 0.2752956435492489
+    homing.max_position_rad: 1.475295643549249
+    homing.kp: 1.75
+    homing.kd: 2.0
+    homing.knee_hip_reference_rad: 0.7898451209277493
+    homing.output_path: /home/tocatl/tocatl/config/leg1-powered-homing-2026-10-23.json

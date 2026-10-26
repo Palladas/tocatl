@@ -1,0 +1,48 @@
+# All six hip-pitch/knee pairs. Yaw motors (including disconnected 51) are excluded.
+# Stop candidates for legs 2–6 are operator-declared unloaded references.
+# Finish direction checks and loaded-stop verification before powered homing.
+# /motors/home homes homing.legs sequentially; /motors/leg_N/home selects one leg.
+motor_controller:
+  ros__parameters:
+    backend: hardware
+    allow_hardware_motion: false
+    allow_homing: false
+    can_buses: [can0, can1]
+    can0_channel: can0
+    can1_channel: can1
+    telemetry_motor_ids: [12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]
+    actuation_motor_ids: [12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]
+    poll_period_s: 0.5
+    telemetry_timeout_s: 1.5
+    homing.method: hip_knee
+    homing.legs: [1, 2, 3, 4, 5, 6]
+    homing.verify_repeatability: false
+    homing.output_path: /home/tocatl/tocatl/config/hip-knee-homing.json
+    # Leg 1 retains its previously tested references.
+    homing.leg_1.hip_stop_rad: 0.8028152895399412
+    homing.leg_1.knee_stop_rad: 0.7394903486686513
+    homing.leg_1.hip_direction: -1
+    homing.leg_1.knee_direction: -1
+    # 2026-10-25 repeated operator-declared unloaded stop references.
+    # Home directions manually checked for all ten motors.
+    # These are unloaded stop references; powered loaded-stop validation is pending.
+    homing.leg_2.hip_stop_rad: -1.646639200427252
+    homing.leg_2.knee_stop_rad: 0.05245288776989376
+    homing.leg_2.hip_direction: -1
+    homing.leg_2.knee_direction: -1
+    homing.leg_3.hip_stop_rad: -1.551079575799191
+    homing.leg_3.knee_stop_rad: 0.012397955291065799
+    homing.leg_3.hip_direction: -1
+    homing.leg_3.knee_direction: -1
+    homing.leg_4.hip_stop_rad: -1.6397726405737387
+    homing.leg_4.knee_stop_rad: 0.07114518959334681
+    homing.leg_4.hip_direction: -1
+    homing.leg_4.knee_direction: -1
+    homing.leg_5.hip_stop_rad: -0.03681239032577999
+    homing.leg_5.knee_stop_rad: -0.020027466239413982
+    homing.leg_5.hip_direction: -1
+    homing.leg_5.knee_direction: -1
+    homing.leg_6.hip_stop_rad: -1.632524605172808
+    homing.leg_6.knee_stop_rad: 0.046349279011215216
+    homing.leg_6.hip_direction: -1
+    homing.leg_6.knee_direction: -1

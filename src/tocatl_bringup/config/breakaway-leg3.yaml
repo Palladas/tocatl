@@ -1,0 +1,32 @@
+# Bounded away-only hip test; limits increased at operator request.
+# Motion remains disabled until explicitly configured and requested.
+# These are commissioning limits, not a verified load rating for printed stops.
+motor_controller:
+  ros__parameters:
+    backend: hardware
+    allow_hardware_motion: false
+    allow_homing: false
+    can0_channel: can0
+    can1_channel: can1
+    poll_period_s: 0.5
+    telemetry_timeout_s: 1.5
+    homing.motor_id: 32
+    homing.direction: -1
+    homing.breakaway_only: true
+    homing.breakaway_staged: true
+    homing.breakaway_motion_rad: 0.08726646259971647  # 5 degrees
+    homing.breakaway_return_slow: true
+    homing.return_speed_rad_s: 0.01  # about 0.57 degrees/s
+    homing.trajectory_overspeed_rad_s: 0.10  # abort at about 5.73 degrees/s
+    homing.baseline_only: false
+    homing.torque_limit_nm: 5.0
+    homing.breakaway_hard_torque_nm: 5.5
+    homing.breakaway_sustained_torque_nm: 5.25
+    homing.torque_ramp_nm_s: 0.02
+    # Ramped stages 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00, 1.50, 2.00, 2.50, 3.00, 3.50, 4.00, 4.50, 5.00 Nm, with one-second holds.
+    homing.phase_timeout_s: 280.0
+    homing.total_timeout_s: 360.0
+    homing.min_position_rad: -0.78
+    homing.max_position_rad: -0.15
+    homing.expected_stop_rad: -0.7330
+    homing.output_path: leg3-breakaway.json
