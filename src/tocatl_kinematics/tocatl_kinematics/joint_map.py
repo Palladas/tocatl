@@ -18,7 +18,7 @@ import json
 from math import isfinite
 from pathlib import Path
 
-from tocatl_kinematics.geometry import JOINTS, LEG_IDS
+from tocatl_kinematics.geometry import JOINTS, LEG_IDS, TRUSTED
 
 
 def motor_ids(leg: int) -> tuple[int, int, int]:
@@ -45,6 +45,7 @@ class JointMap:
     references: dict[int, float]
     reference_sources: dict[int, str]
     unverified: tuple[str, ...] = ()
+    accepted: tuple[str, ...] = ()
 
     def with_references(self, references: dict[int, float], source: str) -> 'JointMap':
         for motor_id, value in references.items():
@@ -88,8 +89,8 @@ def _value(entry, defaults, key, motor_id):
     if raw is None:
         raise ValueError(f'motor {motor_id}: {key} is missing')
     if isinstance(raw, dict):
-        return raw.get('value'), raw.get('status', 'unverified') == 'measured'
-    return raw, False
+        return raw.get('value'), raw.get('status', 'unverified')
+    return raw, 'unverified'
 
 
 def joint_map_from_dict(data: dict) -> JointMap:
@@ -100,20 +101,22 @@ def joint_map_from_dict(data: dict) -> JointMap:
     if set(entries) != expected:
         raise ValueError('joint map needs exactly the 18 inventory motors')
     defaults = data.get('defaults', {})
-    motors, unverified = {}, []
+    motors, unverified, accepted = {}, [], []
     for motor_id, entry in sorted(entries.items()):
         joint = JOINTS[motor_id % 10 - 1]
         kind = defaults.get(joint, {})
         fields, measured = {}, True
         keys = ['sign', 'ratio', 'q_at_reference_rad'] + (['coupling_raw_per_hip_rad'] if joint == 'knee' else [])
         for key in keys:
-            value, ok = _value(entry, kind, key, motor_id)
+            value, status = _value(entry, kind, key, motor_id)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
                 raise ValueError(f'motor {motor_id}: {key} must be a finite number')
             fields[key] = value
-            if not ok:
+            if status not in TRUSTED:
                 measured = False
                 unverified.append(f'motor {motor_id} {key}')
+            elif status == 'accepted':
+                accepted.append(f'motor {motor_id} {key}')
         if fields['sign'] not in (-1, 1):
             raise ValueError(f'motor {motor_id}: sign must be -1 or 1')
         if fields['ratio'] <= 0:
@@ -122,7 +125,8 @@ def joint_map_from_dict(data: dict) -> JointMap:
                                       q_at_reference_rad=float(fields['q_at_reference_rad']),
                                       coupling_raw_per_hip_rad=float(fields.get('coupling_raw_per_hip_rad', 0.0)),
                                       verified=measured)
-    return JointMap(motors=motors, references={}, reference_sources={}, unverified=tuple(unverified))
+    return JointMap(motors=motors, references={}, reference_sources={}, unverified=tuple(unverified),
+                    accepted=tuple(accepted))
 
 
 def load_joint_map(path) -> JointMap:

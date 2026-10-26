@@ -57,7 +57,7 @@ def test_validation_flags_speed_cap_and_reports_shortest_period(geometry, joint_
     assert any('rad/s >' in v for v in report['violations'])
     slow = plan(geometry, TripodGait(heading_rad=pi / 2, period_s=report['min_feasible_period_s'] * 1.05))
     assert validate_trajectory(slow, geometry, joint_map)['ok']
-    assert not report['verified']
+    assert report['verified'] and report['accepted_values'] == 126
 
 
 def test_validation_flags_out_of_service_yaw_only_when_it_moves(geometry, joint_map):

@@ -17,6 +17,9 @@ from pathlib import Path
 
 JOINTS = ('hip_yaw', 'hip_pitch', 'knee')
 LEG_IDS = (1, 2, 3, 4, 5, 6)
+# "measured": measured on the robot. "accepted": an existing (legacy) value the operator
+# accepted as correct without re-measuring. Both count as verified; anything else does not.
+TRUSTED = ('measured', 'accepted')
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class RobotGeometry:
     legs: dict[int, LegGeometry]
     source: str
     unverified: tuple[str, ...]
+    accepted: tuple[str, ...] = ()
 
     def leg(self, leg_id: int) -> LegGeometry:
         return self.legs[leg_id]
@@ -75,20 +79,20 @@ def _range(value, name):
 
 
 def _field(entry, defaults, key, leg):
-    """Read a measured field ({"value", "status", ...}) or a bare number, per leg or default."""
+    """Read a field ({"value", "status", ...}) or a bare number, per leg or default -> (value, status)."""
     raw = entry.get(key, defaults.get(key))
     if raw is None:
         raise ValueError(f'leg {leg}: {key} is missing')
     if isinstance(raw, dict):
-        return raw.get('value'), raw.get('status', 'unverified') == 'measured'
-    return raw, False
+        return raw.get('value'), raw.get('status', 'unverified')
+    return raw, 'unverified'
 
 
 def geometry_from_dict(data: dict) -> RobotGeometry:
     if data.get('schema_version') != 1:
         raise ValueError('robot geometry schema_version must be 1')
     defaults = data.get('defaults', {})
-    legs, unverified = {}, []
+    legs, unverified, accepted = {}, [], []
     entries = {int(k): v for k, v in data.get('legs', {}).items()}
     if set(entries) != set(LEG_IDS):
         raise ValueError('robot geometry needs exactly legs 1-6')
@@ -96,23 +100,28 @@ def geometry_from_dict(data: dict) -> RobotGeometry:
         values, all_measured = {}, True
         for key in ('mount_x_m', 'mount_y_m', 'mount_z_m', 'mount_angle_rad', 'coxa_radial_m',
                     'coxa_vertical_m', 'thigh_m', 'shin_m'):
-            raw, measured = _field(entry, defaults, key, leg_id)
+            raw, status = _field(entry, defaults, key, leg_id)
             values[key] = _number(raw, f'leg {leg_id} {key}')
-            if not measured:
+            if status not in TRUSTED:
                 all_measured = False
                 unverified.append(f'leg {leg_id} {key}')
+            elif status == 'accepted':
+                accepted.append(f'leg {leg_id} {key}')
         for key in ('thigh_m', 'shin_m'):
             if values[key] <= 0:
                 raise ValueError(f'leg {leg_id} {key} must be positive')
         limits = {}
         for joint in JOINTS:
-            raw, measured = _field(entry.get('limits_rad', {}), defaults.get('limits_rad', {}), joint, leg_id)
+            raw, status = _field(entry.get('limits_rad', {}), defaults.get('limits_rad', {}), joint, leg_id)
             limits[joint] = _range(raw, f'leg {leg_id} {joint} limits')
-            if not measured:
+            if status not in TRUSTED:
                 all_measured = False
                 unverified.append(f'leg {leg_id} {joint} limits')
+            elif status == 'accepted':
+                accepted.append(f'leg {leg_id} {joint} limits')
         legs[leg_id] = LegGeometry(leg=leg_id, limits=JointLimits(**limits), verified=all_measured, **values)
-    return RobotGeometry(legs=legs, source=str(data.get('source', '')), unverified=tuple(unverified))
+    return RobotGeometry(legs=legs, source=str(data.get('source', '')), unverified=tuple(unverified),
+                         accepted=tuple(accepted))
 
 
 def load_geometry(path) -> RobotGeometry:

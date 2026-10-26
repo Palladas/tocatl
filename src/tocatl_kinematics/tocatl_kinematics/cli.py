@@ -35,9 +35,12 @@ def _load(args):
         refs, source = load_references(path)
         joint_map = joint_map.with_references(refs, source)
     unverified = len(geometry.unverified) + len(joint_map.unverified)
+    accepted = len(geometry.accepted) + len(joint_map.accepted)
     if unverified:
         print(f'WARNING: {unverified} geometry/joint-map values are unverified; results are not fit for motion.',
               file=sys.stderr)
+    if accepted:
+        print(f'Note: {accepted} geometry/joint-map values are accepted legacy values, not re-measured.', file=sys.stderr)
     return geometry, joint_map
 
 

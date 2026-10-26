@@ -5,9 +5,21 @@ targets, and plans a tripod gait. It is offline: nothing in it opens CAN or send
 `MotorCommand`. Executing a trajectory (Level 3: `allow_hardware_motion`, measured
 envelopes, homed legs) is a separate step and is not implemented yet.
 
-**Status (2026-10-26):** the geometry and joint map are seeded from legacy values. **Every
-value is `unverified`.** All tools warn about this, and validation reports `verified: false`.
-Measure the values (procedure below) before using any output near the robot.
+**Status (2026-10-26):** Pranav accepted the legacy measurements as correct without re-measuring
+them. Every geometry and joint-map value has `"status": "accepted"`. That counts as verified, and
+the tools print how many values are accepted rather than measured.
+
+The accepted model reproduces the legacy FK and the legacy motor mapping exactly
+(`test_legacy_equivalence`):
+- **Coxa offset.** The legacy FK applies the 45.56 mm offset before yaw. So the yaw axis sits
+  0.3456 m from the body centre, and the pitch axis lies on the yaw axis (`coxa_radial_m = 0`),
+  114.25 mm above the mounting plane.
+- **Reference pose.** The joint angles at the homing (compressed) stop are taken from the legacy
+  motor-zero pose: hip pitch θ = 134.56°, knee φ = 168.82°.
+- **Joint limits.** These come from the old 2026-08-25 calibration. The knee range is exact only
+  with the hip at its reference, because that calibration limited knee encoder travel.
+
+Use the measurement procedure below to replace any value with a `measured` one.
 
 ## Conventions
 
@@ -49,12 +61,11 @@ joint angles only.
 
 ### Knee coupling
 
-The expectation is that there is no coupling, i.e. `coupling = 0`. Earlier evidence pointed the
-other way:
-- The legacy model, `motor_knee = -(pitch + knee)`, implies `+1` with these signs.
-- A manual hip-only move on 2026-10-23 read hip +47° and knee −41° (raw).
-
-The measurement below decides.
+The knee *joint* is independent of the hip, but under the accepted legacy mapping the knee
+*encoder* follows the hip 1:1 (`coupling = 1`): `motor_knee = −(pitch + knee) + K`. That fits a
+knee motor that reads the shin's absolute angle through a linkage. A manual hip-only move on
+2026-10-23 read hip +47° and knee −41° raw, a ratio of about 0.87. A hip-only recording run
+through `tocatl_fit coupling` confirms or corrects the value.
 
 ## Tools
 

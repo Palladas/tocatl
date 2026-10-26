@@ -1,61 +1,91 @@
 {
   "schema_version": 1,
-  "source": "Seeded 2026-10-26; every value unverified. Raw references are NOT stored here: pitch/knee come from this session's homing result (reference pose = compressed homing stop), yaw from a declared reference pose. Replace values with measurements per docs/kinematics.md.",
+  "source": "Legacy motor mapping accepted as correct by Pranav 2026-10-26 (status \"accepted\"). theta_to_legacy_motor is motor_hip = pitch_L - off, motor_knee = -(pitch_L + knee_L) + K with pitch_L = -theta, knee_L = phi: sign -1 for hip and knee, and the knee encoder follows the hip 1:1 (coupling +1) while the knee joint itself is independent. The reference pose is taken to be the legacy motor-zero pose (theta 134.56 deg, phi 168.82 deg), i.e. the compressed homing stop. Raw references still come from each session's homing. Reproduces the legacy mapping exactly up to a constant (test_legacy_equivalence).",
   "defaults": {
     "hip_yaw": {
       "sign": {
         "value": 1,
-        "status": "unverified",
-        "source": "placeholder"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy_geometry.py theta_to_legacy_motor: motor_yaw = yaw"
       },
       "ratio": {
         "value": 1.0,
-        "status": "unverified",
-        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "old-repo session calibration tocatl-calibration-all18-final-lab-20260825T051449Z.json external_gear_ratio"
       },
       "q_at_reference_rad": {
         "value": 0.0,
-        "status": "unverified",
-        "source": "definition: declared yaw reference pose is yaw 0 (leg along its mount angle)"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "definition: the declared yaw reference pose is yaw 0"
       }
     },
     "hip_pitch": {
       "sign": {
         "value": -1,
-        "status": "unverified",
-        "source": "legacy mapping motor = -theta; consistent with homing: toward the stop is raw-negative, and leg 1 raw increased moving away from the stop (2026-10-23)"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy_geometry.py theta_to_legacy_motor: motor_hip = -theta - off; matches homing (toward the stop is raw-negative)"
       },
       "ratio": {
         "value": 1.0,
-        "status": "unverified",
-        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "old-repo session calibration tocatl-calibration-all18-final-lab-20260825T051449Z.json external_gear_ratio"
       },
       "q_at_reference_rad": {
-        "value": 1.5,
-        "status": "unverified",
-        "source": "placeholder: compressed stop assumed near thigh-raised limit; measure with an inclinometer"
+        "value": 2.3485150415,
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy motor zero, hip_pitch_offset (45.44 - 180) deg -> theta 134.56 deg; taken as the compressed homing stop (legacy hip motor window starts at 0)"
       }
     },
     "knee": {
       "sign": {
         "value": -1,
-        "status": "unverified",
-        "source": "legacy mapping; homing toward the stop is raw-negative"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy_geometry.py theta_to_legacy_motor: motor_knee = theta - phi + K"
       },
       "ratio": {
         "value": 1.0,
-        "status": "unverified",
-        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "old-repo session calibration tocatl-calibration-all18-final-lab-20260825T051449Z.json external_gear_ratio"
       },
       "q_at_reference_rad": {
-        "value": 2.4,
-        "status": "unverified",
-        "source": "placeholder: compressed stop assumed near fully folded; measure"
+        "value": 2.9464648432,
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy motor zero, pitch_L + knee_L = (45.44 - 11.18) deg -> phi 168.82 deg; taken as the compressed homing stop"
       },
       "coupling_raw_per_hip_rad": {
-        "value": 0.0,
-        "status": "unverified",
-        "source": "expected 0 (operator, 2026-10-26). The legacy model motor_knee = -(pitch+knee) implies +1 with these signs, and a 2026-10-23 manual hip-only move read hip +47 deg / knee -41 deg raw. Fit it from a hip-only recording (tocatl_fit coupling)."
+        "value": 1.0,
+        "status": "accepted",
+        "accepted_by": "Pranav Murthy",
+        "date": "2026-10-26",
+        "method": "legacy value accepted as correct without re-measurement",
+        "source": "legacy_geometry.py theta_to_legacy_motor: knee encoder = theta - phi + K, so +1 per hip radian. Consistent with the 2026-10-23 manual hip-only move (hip +47 deg / knee -41 deg raw, about 0.87). Fit with tocatl_fit coupling to confirm"
       }
     }
   },

@@ -8,11 +8,18 @@ from tocatl_kinematics.geometry import geometry_from_dict
 from tocatl_kinematics.leg import OutOfLimits, Unreachable, fk, ik, jacobian
 
 
-def test_seeded_geometry_loads_and_reports_unverified(geometry):
+def test_committed_geometry_is_accepted_legacy(geometry):
     assert set(geometry.legs) == {1, 2, 3, 4, 5, 6}
-    assert not any(leg.verified for leg in geometry.legs.values())
-    assert 'leg 1 thigh_m' in geometry.unverified
+    assert all(leg.verified for leg in geometry.legs.values()) and not geometry.unverified
+    assert 'leg 1 thigh_m' in geometry.accepted
     assert geometry.leg(1).thigh_m == pytest.approx(0.3303455, abs=1e-6)
+
+
+def test_unknown_status_is_unverified(geometry_data):
+    data = copy.deepcopy(geometry_data)
+    data['defaults']['shin_m']['status'] = 'guess'
+    geometry = geometry_from_dict(data)
+    assert 'leg 2 shin_m' in geometry.unverified and not geometry.leg(2).verified
 
 
 @pytest.mark.parametrize('change', [
@@ -73,11 +80,12 @@ def test_unreachable_raises_instead_of_clamping(geometry):
 
 def test_out_of_limits_raises_with_joint_names(geometry):
     leg = geometry.leg(1)
-    target = fk((1.2, 0.0, 1.0), leg)  # yaw beyond the +/-0.5 placeholder
+    yaw = leg.limits.hip_yaw[1] + 0.2
+    target = fk((yaw, 0.0, 1.2), leg)  # yaw just past its limit
     with pytest.raises(OutOfLimits) as error:
         ik(target, leg)
     assert error.value.joints == ['hip_yaw']
-    assert ik(target, leg, check_limits=False).q == pytest.approx((1.2, 0.0, 1.0))
+    assert ik(target, leg, check_limits=False).q == pytest.approx((yaw, 0.0, 1.2))
 
 
 def test_jacobian_matches_finite_differences(wide_geometry):
@@ -91,7 +99,9 @@ def test_jacobian_matches_finite_differences(wide_geometry):
 
 def test_solution_reports_margins(geometry):
     leg = geometry.leg(1)
-    solution = ik(fk((0.0, 0.3, 1.2), leg), leg)
+    q = (0.0, 0.3, 1.2)
+    solution = ik(fk(q, leg), leg)
     assert solution.reach_margin_m > 0
-    assert solution.limit_margin_rad == pytest.approx(min(0.5, 1.6 - 0.3, 2.5 - 1.2, 1.2 - 0.1))
+    expected = min(min(v - low, high - v) for v, (low, high) in zip(q, leg.limits.as_tuple()))
+    assert solution.limit_margin_rad == pytest.approx(expected)
     assert 1 <= solution.condition < 100

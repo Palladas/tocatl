@@ -74,4 +74,5 @@ def validate_trajectory(trajectory, geometry: RobotGeometry, joint_map: JointMap
                 min_reach_margin_m=_finite(np.concatenate(list(trajectory.reach_margin_m.values())), min),
                 max_condition=_finite(np.concatenate(list(trajectory.condition.values())), max),
                 unverified_values=unverified,
+                accepted_values=len(geometry.accepted) + len(joint_map.accepted),
                 verified=unverified == 0)

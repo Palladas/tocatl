@@ -19,10 +19,26 @@ def mapped(joint_map_data, **knee):
     return joint_map_from_dict(data).with_references(REFS, 'test')
 
 
-def test_seeded_map_is_unverified_and_complete(joint_map):
+def test_committed_map_is_accepted_legacy(joint_map):
     assert len(joint_map.motors) == 18
-    assert not any(m.verified for m in joint_map.motors.values())
-    assert joint_map.motors[12].sign == -1 and joint_map.motors[13].coupling_raw_per_hip_rad == 0.0
+    assert all(m.verified for m in joint_map.motors.values()) and not joint_map.unverified
+    assert joint_map.motors[12].sign == -1 and joint_map.motors[13].coupling_raw_per_hip_rad == 1.0
+
+
+def test_legacy_equivalence(geometry, joint_map):
+    """Accepted values reproduce legacy FK and the legacy motor mapping (up to a constant)."""
+    from tocatl_kinematics import legacy_geometry as legacy
+    from tocatl_kinematics.leg import fk
+    leg = geometry.leg(1)
+    jm = joint_map.with_references({11: 0.0, 12: 0.0, 13: 0.0}, 'legacy motor zero')
+    rng = np.random.default_rng(3)
+    for _ in range(50):
+        yaw, pitch_l, knee_l = rng.uniform(-1, 1), rng.uniform(-2, 1), rng.uniform(0.2, 2.5)
+        old = legacy.foot_position_from_joint_angles(yaw, pitch_l, knee_l)
+        q = (yaw, -pitch_l, knee_l)
+        local = fk(q, leg) + [legacy.DEFAULT_LEG_GEOMETRY.hip_horizontal_offset_mm / 1000, 0, 0]
+        assert local == pytest.approx([old.x_mm / 1000, old.y_mm / 1000, old.z_mm / 1000], abs=1e-12)
+        assert jm.to_raw(1, q) == pytest.approx(legacy.theta_to_legacy_motor(yaw, pitch_l, knee_l), abs=1e-9)
 
 
 @pytest.mark.parametrize('coupling', [0.0, 1.0, -0.87])
