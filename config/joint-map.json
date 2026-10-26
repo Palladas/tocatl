@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "source": "Seeded 2026-10-26; every value unverified. Raw references are NOT stored here: pitch/knee come from this session's homing result (reference pose = compressed homing stop), yaw from a declared reference pose. Replace values with measurements per docs/kinematics.md.",
+  "defaults": {
+    "hip_yaw": {
+      "sign": {
+        "value": 1,
+        "status": "unverified",
+        "source": "placeholder"
+      },
+      "ratio": {
+        "value": 1.0,
+        "status": "unverified",
+        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+      },
+      "q_at_reference_rad": {
+        "value": 0.0,
+        "status": "unverified",
+        "source": "definition: declared yaw reference pose is yaw 0 (leg along its mount angle)"
+      }
+    },
+    "hip_pitch": {
+      "sign": {
+        "value": -1,
+        "status": "unverified",
+        "source": "legacy mapping motor = -theta; consistent with homing: toward the stop is raw-negative, and leg 1 raw increased moving away from the stop (2026-10-23)"
+      },
+      "ratio": {
+        "value": 1.0,
+        "status": "unverified",
+        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+      },
+      "q_at_reference_rad": {
+        "value": 1.5,
+        "status": "unverified",
+        "source": "placeholder: compressed stop assumed near thigh-raised limit; measure with an inclinometer"
+      }
+    },
+    "knee": {
+      "sign": {
+        "value": -1,
+        "status": "unverified",
+        "source": "legacy mapping; homing toward the stop is raw-negative"
+      },
+      "ratio": {
+        "value": 1.0,
+        "status": "unverified",
+        "source": "old-repo calibration external_gear_ratio 1.0 (provisional)"
+      },
+      "q_at_reference_rad": {
+        "value": 2.4,
+        "status": "unverified",
+        "source": "placeholder: compressed stop assumed near fully folded; measure"
+      },
+      "coupling_raw_per_hip_rad": {
+        "value": 0.0,
+        "status": "unverified",
+        "source": "expected 0 (operator, 2026-10-26). The legacy model motor_knee = -(pitch+knee) implies +1 with these signs, and a 2026-10-23 manual hip-only move read hip +47 deg / knee -41 deg raw. Fit it from a hip-only recording (tocatl_fit coupling)."
+      }
+    }
+  },
+  "motors": {
+    "11": {},
+    "12": {},
+    "13": {},
+    "21": {},
+    "22": {},
+    "23": {},
+    "31": {},
+    "32": {},
+    "33": {},
+    "41": {},
+    "42": {},
+    "43": {},
+    "51": {},
+    "52": {},
+    "53": {},
+    "61": {},
+    "62": {},
+    "63": {}
+  }
+}
