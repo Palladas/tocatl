@@ -140,6 +140,7 @@ def test_pair_failure_never_sets_ready(monkeypatch, tmp_path):
             self.completed_result = None
             self.thread = NS(join=lambda: None)
         def start(self): pass
+        def cancel(self): pass
         def status(self): return False, True, 'No fresh disabled acknowledgement'
     monkeypatch.setattr(homing, 'BoundedHipHoming', Child)
     pair = homing.LegPairHoming(hw, tmp_path/'pair.json')
@@ -315,7 +316,8 @@ def test_homing_approaches_from_far_start_then_repeats_contacts(motor_id, stop, 
     assert seq.initial_phase == 'SEEK_STOP'
     assert seq.result()['contact_positions_rad'] == pytest.approx([stop]*3)
     assert seq.c.minimum <= start <= seq.c.maximum
-    assert first_contact_time > 60  # the previous fixed approach timeout was insufficient
+    assert first_contact_time > abs(start-stop)/seq.c.reference_speed
+    assert seq.c.initial_seek_timeout > first_contact_time
     assert seq.c.initial_seek_timeout > 60
     # First contact comes from the initial approach; later contacts require actual backoff.
     assert sum(a != b and b == 'BACKOFF' for a, b in zip(phases, phases[1:])) == 2
@@ -402,7 +404,7 @@ def test_normal_pair_has_one_verified_contact_and_finishes_simulation_under_minu
         assert result['config']['contacts_required'] == 1
         assert len(result['contact_positions_rad']) == 1
         assert result['contact_verified'] and not result['independent_reapproaches']
-        assert result['config']['command_torque_limit'] == 2.625
+        assert result['config']['command_torque_limit'] == 1.5
     ready = LegReadiness()
     ready.complete([hip, knee])
     assert set(ready.snapshot()[0]) == {12, 13}
@@ -498,3 +500,42 @@ def test_normal_homing_does_not_limit_elastic_motion_to_start_corridor():
     command = seq.update(1.05, 0., 0., .82, .82)
     assert command.position < 1.05
     assert not seq.done
+
+
+@pytest.mark.parametrize('direction', (-1, 1))
+def test_pair_unloads_spring_then_fades_damping_before_completion(direction):
+    c = KneeSeekConfig.from_start(12, .8, .8, direction=direction)
+    seq = KneeSeekSequence(c, .8, 0.)
+    for tick in range(1, 500):
+        now = tick*.02
+        command = seq.update(.8, 0., direction*1.2, now, now)
+        if seq.phase == 'UNLOADING':
+            break
+    assert seq.phase == 'UNLOADING' and not seq.done
+    contact = seq.contacts[:]
+    commands = []
+    for tick in range(1, 152):
+        now = seq.release_started+tick*.02
+        commands.append(seq.update(.8, 0., 0., now, now))
+        if seq.done:
+            break
+    errors = [abs(command.position-.8) for command in commands]
+    assert all(b <= a+1e-12 for a,b in zip(errors, errors[1:]))
+    assert commands[0].kd == c.kd
+    assert commands[-1].kp == commands[-1].kd == commands[-1].release_scale == 0
+    assert seq.done and seq.contacts == contact
+    assert seq.result()['release_completed']
+
+
+def test_unload_preserves_feedback_and_effort_guards():
+    c = KneeSeekConfig.from_start(12, .8, .8)
+    for fault in ('stale', 'effort', 'speed'):
+        seq = KneeSeekSequence(c, .8, 0.)
+        seq.phase = 'UNLOADING'
+        seq.release_started = 0.
+        seq.release_error = -.6
+        seq.last_time, seq.last_position = .02, .8
+        with pytest.raises(ValueError):
+            seq.update(.9 if fault == 'speed' else .8, 0.,
+                       4. if fault == 'effort' else 0., .04,
+                       .5 if fault == 'stale' else .04)

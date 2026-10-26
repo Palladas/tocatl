@@ -5,18 +5,19 @@
       "motor_id": 32,
       "bus": "can0",
       "method": "active_pd_endstop_search",
-      "initial_position_rad": 0.7143129625391023,
+      "initial_position_rad": -0.10547798886091364,
       "initial_phase": "SEEK_STOP",
-      "home_position_rad": -1.5798809796292055,
+      "home_position_rad": -0.15697718776226388,
       "previous_reference_rad": -1.551079575799191,
-      "reference_delta_rad": -0.028801403830014394,
-      "reference_within_window": true,
+      "reference_delta_rad": 1.3941023880369272,
+      "reference_within_window": false,
       "contact_positions_rad": [
-        -1.5798809796292055
+        -0.15697718776226388
       ],
       "spread_rad": 0.0,
       "independent_reapproaches": false,
       "contact_verified": true,
+      "release_completed": true,
       "device_zero_written": false,
       "config": {
         "motor_id": 32,
@@ -26,12 +27,12 @@
         "kp": 1.75,
         "kd": 2.0,
         "direction": -1,
-        "lead": 1.5,
+        "lead": 0.8571428571428571,
         "reference_speed": 0.2,
-        "command_torque_limit": 2.625,
+        "command_torque_limit": 1.5,
         "overspeed": 0.5,
         "effort_limit": 3.5,
-        "minimum_contact_effort": 2.3,
+        "minimum_contact_effort": 1.0,
         "stop_window": 0.03,
         "settle_motion": 0.003,
         "dwell": 0.6,
@@ -42,11 +43,12 @@
         "repeatability": 0.01,
         "phase_timeout": 60.0,
         "initial_seek_timeout": 60.0,
-        "contacts_required": 1
+        "contacts_required": 1,
+        "release_duration": 3.0
       },
-      "completed_unix_s": 1792983399.6692357,
+      "completed_unix_s": 1793054751.767005,
       "control": "native_mit_impedance_runtime_torque_limit",
-      "command_torque_limit_nm": 2.625,
+      "command_torque_limit_nm": 1.5,
       "torque_limit_register": "0x700b"
     }
   }
