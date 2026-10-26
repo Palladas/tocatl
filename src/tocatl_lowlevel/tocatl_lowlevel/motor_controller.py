@@ -34,7 +34,10 @@ class MotorController(Node):
             max_kp=self.declare_parameter('max_motor_kp', 5.0).value,
             max_kd=self.declare_parameter('max_motor_kd', 1.0).value,
             max_step=self.declare_parameter('max_position_step_rad', 0.1).value,
-            motor_ids=self.declare_parameter('actuation_motor_ids', [m.motor_id for m in MOTORS]).value)
+            motor_ids=self.declare_parameter('actuation_motor_ids', [m.motor_id for m in MOTORS]).value,
+            home_offsets={joint: bounds for joint in ('hip_pitch', 'knee')
+                          if (bounds := self.declare_parameter(f'{joint}_home_offset_rad', [0.0]).value) != [0.0]},
+            homes=lambda: self.readiness.snapshot()[0])
         if backend == 'hardware':
             from tocatl_lowlevel.hardware import HardwareTelemetry
             buses = self.declare_parameter('can_buses', ['can0', 'can1']).value
@@ -50,9 +53,11 @@ class MotorController(Node):
                 motor_id_overrides={12: self.declare_parameter('leg1_hip_can_id', 12).value},
                 motor_ids=self.declare_parameter(
                     'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value)
+        torque_limit = self.declare_parameter('motion_torque_limit_nm', 0.0).value
         self.motion = (HardwareMotion(self.hardware, self.commands,
                        self.declare_parameter('allow_hardware_motion', False).value,
-                       readiness_check=lambda targets: self.readiness.require(self.hardware, targets))
+                       readiness_check=lambda targets: self.readiness.require(self.hardware, targets),
+                       torque_limit=torque_limit or None)
                        if self.hardware is not None else None)
         self.homing = None
         self.homing_was_active = False
@@ -66,6 +71,9 @@ class MotorController(Node):
             elif self.motion.allowed:
                 raise ValueError('Combined homing/actuation requires homing.method=hip_knee')
             self.homing_service = self.create_service(Trigger, 'motors/home', self.home)
+            if hasattr(self.homing, 'groups'):
+                self.tripod_homing_service = self.create_service(
+                    Trigger, 'motors/home_tripods', partial(self.home, grouping='tripods'))
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
@@ -116,18 +124,22 @@ class MotorController(Node):
         response.message = 'Mock motors enabled' if request.data else 'Mock motors disabled'
         return response
 
-    def home(self, request, response, leg_id=None):
+    def home(self, request, response, leg_id=None, grouping=None):
         try:
             with self.motion.lock:
                 if self.motion.requested or self.motion.armed or self.motion.stop_pending:
                     raise ValueError('Disarm and confirm stopped motors before homing')
             self.commands.clear()
-            if leg_id is None:
+            if leg_id is None and grouping is not None:
+                self.homing.start(grouping=grouping)
+            elif leg_id is None:
                 self.homing.start()
             else:
                 self.homing.start([leg_id])
             self.homing_was_active = True
-            selection = f'leg {leg_id}' if leg_id is not None else 'configured legs'
+            selection = (f'leg {leg_id}' if leg_id is not None else
+                         'configured legs as tripods 1-3-5 then 2-4-6' if grouping == 'tripods' else
+                         'configured legs')
             self.get_logger().info(f'Homing started for {selection}')
             response.success, response.message = True, 'Homing requested'
         except ValueError as error:

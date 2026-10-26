@@ -1279,6 +1279,13 @@ class LegHomingConfig:
                 raise ValueError(f'Leg {self.leg}: stop reference outside encoder range')
 
 
+# Batch groupings for /motors/home: opposite pairs (4 motors at once) or alternate-leg
+# tripods (6 motors at once). Six motors is the most the shared 10 ms-per-message
+# transport polls within the 0.25 s feedback freshness guard; all 12 do not fit.
+GROUPINGS = ('pairs', 'tripods')
+TRIPODS = ((1, 3, 5), (2, 4, 6))
+
+
 class HipKneeHoming:
     """Home hip then knee; repeated contacts are an optional commissioning mode."""
     def __init__(self, hardware, output, *, verify_repeatability=False, timeout_s=None,
@@ -1297,6 +1304,7 @@ class HipKneeHoming:
         if any(profile.leg != leg for leg, profile in self.profiles.items()):
             raise ValueError('Homing profile leg does not match its mapping key')
         self.selected_legs = self.leg_ids
+        self.grouping = 'pairs'
         self.current_leg = None
         self.verify_repeatability, self.timeout_s = verify_repeatability, timeout_s
         self.hardware, self.output = hardware, output
@@ -1319,7 +1327,9 @@ class HipKneeHoming:
                         '; '.join(s[2] for s in states))
             return False, self.faulted, self.reason
 
-    def start(self, legs=None):
+    def start(self, legs=None, grouping='pairs'):
+        if grouping not in GROUPINGS:
+            raise ValueError(f'Homing grouping must be one of {GROUPINGS}')
         with self.lock:
             if self.thread is not None and self.thread.is_alive():
                 for child in list(self.children.values()) or ([self.child] if self.child else []):
@@ -1339,6 +1349,7 @@ class HipKneeHoming:
                 if not set(hip_knee_ids(leg)).issubset(available):
                     raise ValueError(f'Leg {leg}: both motors must be selected in telemetry_motor_ids')
             self.selected_legs = selected
+            self.grouping = grouping
             self.current_leg = selected[0]
             self.current_legs = selected
             for leg in selected:
@@ -1360,6 +1371,9 @@ class HipKneeHoming:
                 child.cancel()
 
     def groups(self):
+        if self.grouping == 'tripods':
+            return [group for group in (tuple(leg for leg in tripod if leg in self.selected_legs)
+                                        for tripod in TRIPODS) if group]
         remaining = set(self.selected_legs)
         groups = []
         for leg in self.selected_legs:

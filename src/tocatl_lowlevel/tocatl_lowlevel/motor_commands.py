@@ -6,6 +6,7 @@ import time
 
 from tocatl_lowlevel.motor_map import MOTORS
 
+JOINT_OF = {m.motor_id: m.joint for m in MOTORS}
 JOINT_NAMES = tuple(f'leg_{m.leg}_{m.joint}' for m in MOTORS)
 
 MOTOR_IDS = tuple(m.motor_id for m in MOTORS)
@@ -26,7 +27,11 @@ class MotorCommands:
 
     def __init__(self, timeout=1.0, max_age=0.5, clock=time.monotonic,
                  minimum=None, maximum=None, max_velocity=0.21, max_torque=0.5,
-                 max_kp=5.0, max_kd=1.0, max_step=0.1, motor_ids=MOTOR_IDS):
+                 max_kp=5.0, max_kd=1.0, max_step=0.1, motor_ids=MOTOR_IDS,
+                 home_offsets=None, homes=None):
+        """``home_offsets`` ({joint: (low, high)}) bounds each target relative to that motor's
+        homed raw position this session, from ``homes()``. Raw encoder positions shift by
+        whole rotor turns across power cycles, so fixed raw envelopes cannot be reused."""
         self.motor_ids = tuple(motor_ids)
         if (not self.motor_ids or len(set(self.motor_ids)) != len(self.motor_ids) or
                 any(type(mid) is not int or mid not in MOTOR_IDS for mid in self.motor_ids)):
@@ -44,6 +49,18 @@ class MotorCommands:
                                    isfinite(self.minimum[mid]) and isfinite(self.maximum[mid]) and
                                    -12.5 <= self.minimum[mid] < self.maximum[mid] <= 12.5
                                    for mid in self.motor_ids))
+        self.home_offsets, self.homes = None, homes
+        if home_offsets:
+            if self.envelope_valid:
+                raise ValueError('Configure either absolute or home-relative motor envelopes, not both')
+            offsets = {joint: tuple(bounds) for joint, bounds in home_offsets.items()}
+            if (homes is None or any(JOINT_OF[mid] not in offsets for mid in self.motor_ids) or
+                    any(len(b) != 2 or not all(isfinite(v) for v in b) or not -12.5 <= b[0] < b[1] <= 12.5
+                        for b in offsets.values())):
+                raise ValueError('Home-relative envelopes need finite [low, high] offsets for every '
+                                 'actuated joint type and a session home source')
+            self.home_offsets = offsets
+            self.envelope_valid = True
         self.bounds = (max_velocity, max_torque, max_kp, max_kd)
         if (not all(isfinite(v) and v > 0 for v in (timeout, max_age, max_step)) or
                 not all(isfinite(v) and v >= 0 for v in self.bounds) or
@@ -72,8 +89,11 @@ class MotorCommands:
                     abs(m.torque_nm) > self.bounds[1] or not 0 <= m.kp <= self.bounds[2] or
                     not 0 <= m.kd <= self.bounds[3]):
                 raise ValueError(f'Motor {m.motor_id} target exceeds command limits')
-            if self.envelope_valid and not self.minimum[m.motor_id] <= m.position_rad <= self.maximum[m.motor_id]:
-                raise ValueError(f'Motor {m.motor_id} target outside motor-space position envelope')
+            if self.envelope_valid:
+                low, high = self.envelope(m.motor_id)
+                if not low <= m.position_rad <= high:
+                    raise ValueError(f'Motor {m.motor_id} target {m.position_rad:.4f} outside motor-space '
+                                     f'position envelope [{low:.4f}, {high:.4f}]')
             targets.append(Target(m.motor_id, *values))
         ordered = tuple(sorted(targets, key=lambda t: t.motor_id))
         if check is not None:
@@ -85,6 +105,16 @@ class MotorCommands:
             self.received = self.clock()
             self.last_stamp = stamp
         return ordered
+
+    def envelope(self, motor_id):
+        """Absolute [low, high] raw bounds for ``motor_id`` right now."""
+        if self.home_offsets is None:
+            return self.minimum[motor_id], self.maximum[motor_id]
+        home = self.homes().get(motor_id)
+        if home is None or not isfinite(home):
+            raise ValueError(f'Motor {motor_id} is not homed this session; home-relative envelope unavailable')
+        low, high = self.home_offsets[JOINT_OF[motor_id]]
+        return home + low, home + high
 
     def snapshot(self):
         with self.lock:
@@ -109,6 +139,9 @@ class MotorCommands:
                 raise ValueError(f'Motor {target.motor_id} telemetry/fault status unavailable or stale')
             if sample.faults or sample.state_faults:
                 raise ValueError(f'Motor {target.motor_id} reports a fault')
+            low, high = self.envelope(target.motor_id)
+            if not low <= target.position_rad <= high:
+                raise ValueError(f'Motor {target.motor_id} target outside motor-space position envelope')
             if not isfinite(sample.position) or abs(target.position_rad - sample.position) > self.max_step:
                 raise ValueError(f'Motor {target.motor_id} position step exceeds max_position_step_rad')
 
@@ -120,9 +153,17 @@ class HardwareMotion:
     timeout latch a disarm and require a new command and enable request.
     """
 
-    def __init__(self, hardware, commands, allowed=False, readiness_check=None):
+    def __init__(self, hardware, commands, allowed=False, readiness_check=None, torque_limit=None):
+        """``torque_limit`` (Nm): verified volatile drive cap (0x700b) written and read back for
+        each motor before its first enable; the original is restored only after disabled
+        feedback newer than the stop is seen, otherwise the reduced cap stays in force."""
+        if torque_limit is not None and not (isfinite(torque_limit) and 0 < torque_limit <= 12):
+            raise ValueError('Motion drive torque limit must be in (0, 12] Nm')
         self.hardware, self.commands, self.allowed = hardware, commands, allowed
         self.readiness_check = readiness_check
+        self.torque_limit = torque_limit
+        self.original_limits = {}
+        self.pending_restore = {}
         self.lock = threading.Lock()
         self.requested = False
         self.armed = False
@@ -173,6 +214,8 @@ class HardwareMotion:
                             self.readiness_check(targets)
                         self.commands.check_feedback(self.hardware, targets)
                         by_id = {d.motor_id: d for d in self.hardware.drivers}
+                        if not touched and self.torque_limit is not None:
+                            self.apply_torque_cap(targets)
                         with self.hardware.tx_lock:
                             if not touched:
                                 from CyberGearDriver import RunMode
@@ -206,8 +249,16 @@ class HardwareMotion:
                         touched = self.stop_motors(touched)
                         with self.lock:
                             self.armed = False
+                        self.restore_torque_limits()  # motors that did stop, while others retry
+                    else:
+                        self.restore_torque_limits()
                 except Exception as error:
                     touched = self.stop_motors(touched)
+                    # Capped but never enabled (e.g. a later cap write failed): restore once
+                    # disabled feedback arrives. Motors whose stop failed keep the cap.
+                    held = {d.motor_id for d in touched}
+                    for motor_id in [m for m in self.original_limits if m not in held]:
+                        self.pending_restore[motor_id] = (self.original_limits.pop(motor_id), time.monotonic())
                     with self.lock:
                         self.armed = False
                         self.requested = False
@@ -230,6 +281,10 @@ class HardwareMotion:
                 except Exception as error:
                     errors.append(f'{driver.motor_id}: {error}')
                     remaining.append(driver)
+        stopped = time.monotonic()
+        for driver in drivers:
+            if driver not in remaining and driver.motor_id in self.original_limits:
+                self.pending_restore[driver.motor_id] = (self.original_limits.pop(driver.motor_id), stopped)
         with self.lock:
             self.stop_pending = bool(remaining)
         if errors:
@@ -237,6 +292,32 @@ class HardwareMotion:
                 self.reason = 'Motor stop failed: ' + '; '.join(errors)
                 self.faulted = True
         return remaining
+
+    def apply_torque_cap(self, targets):
+        for target in targets:
+            motor_id = target.motor_id
+            if motor_id in self.original_limits:
+                continue
+            # Re-arming before a pending restore: the drive still holds the cap.
+            original = (self.pending_restore.pop(motor_id)[0] if motor_id in self.pending_restore
+                        else self.hardware.read_runtime_torque_limit(motor_id))
+            self.original_limits[motor_id] = original
+            self.hardware.set_runtime_torque_limit(motor_id, self.torque_limit)
+
+    def restore_torque_limits(self):
+        if not self.pending_restore:
+            return
+        samples, _ = self.hardware.snapshot()
+        for motor_id, (original, stopped) in list(self.pending_restore.items()):
+            sample = samples[motor_id]
+            if sample.mode != 0 or sample.received is None or sample.received <= stopped:
+                continue  # wait for disabled feedback newer than the stop
+            try:
+                self.hardware.set_runtime_torque_limit(motor_id, original)
+                del self.pending_restore[motor_id]
+            except Exception as error:
+                with self.lock:
+                    self.reason = f'Motor {motor_id} torque limit restore pending: {error}'
 
     def close(self):
         self.quit.set()

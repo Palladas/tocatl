@@ -1,0 +1,216 @@
+"""Level 3 motion safety: home-relative envelopes and the verified drive torque cap."""
+import sys
+import threading
+import time
+from types import SimpleNamespace as NS
+
+import pytest
+
+from tocatl_lowlevel.hardware import Sample
+from tocatl_lowlevel.motor_commands import HardwareMotion, MotorCommands
+
+HOMES = {12: -0.0269, 13: 1.5795}
+OFFSETS = {'hip_pitch': (-0.02, 1.6), 'knee': (-1.7, 2.0)}
+
+
+def batch(targets, stamp):
+    return NS(header=NS(stamp=NS(sec=stamp // 10**9, nanosec=stamp % 10**9), frame_id=''),
+              motors=[NS(motor_id=mid, position_rad=pos, velocity_rad_s=0., torque_nm=0., kp=30., kd=2.)
+                      for mid, pos in targets.items()])
+
+
+def commands(homes=HOMES, **kw):
+    return MotorCommands(motor_ids=(12, 13), max_kp=30., max_kd=2., home_offsets=OFFSETS,
+                         homes=lambda: dict(homes), **kw)
+
+
+def test_home_relative_envelope_accepts_inside_and_rejects_outside():
+    c = commands()
+    c.accept(batch({12: -0.0269 + 1.0, 13: 1.5795 - 1.0}, 10**9), 10**9 + 1)
+    with pytest.raises(ValueError, match=r'12 target .* envelope \[-0\.0469, 1\.5731\]'):
+        c.accept(batch({12: -0.0269 + 1.7, 13: 1.5795}, 2 * 10**9), 2 * 10**9 + 1)
+    with pytest.raises(ValueError, match='envelope'):
+        c.accept(batch({12: -0.0269 - 0.05, 13: 1.5795}, 3 * 10**9), 3 * 10**9 + 1)
+
+
+def test_home_relative_envelope_requires_a_session_home():
+    c = commands(homes={12: -0.0269})
+    with pytest.raises(ValueError, match='Motor 13 is not homed this session'):
+        c.accept(batch({12: 0.0, 13: 1.6}, 10**9), 10**9 + 1)
+
+
+@pytest.mark.parametrize('kw', [
+    dict(motor_ids=(11, 12, 13)),                       # yaw has no home-relative envelope
+    dict(minimum=[0., 0.], maximum=[1., 1.]),            # absolute and relative together
+    dict(home_offsets={'hip_pitch': (1., 0.), 'knee': (0., 1.)}),
+    dict(home_offsets=OFFSETS, homes=None),
+])
+def test_invalid_home_relative_configuration(kw):
+    args = dict(motor_ids=(12, 13), home_offsets=OFFSETS, homes=lambda: HOMES)
+    args.update(kw)
+    with pytest.raises(ValueError):
+        MotorCommands(**args)
+
+
+class FakeBus:
+    """Records drive writes in order; feedback follows commands instantly."""
+
+    def __init__(self, fail_cap=None, fail_stop=None):
+        self.events, self.tx_lock, self.stale_after = [], threading.Lock(), 1.0
+        self.limits = {12: 12.0, 13: 12.0}
+        self.samples = {mid: Sample(received=time.monotonic(), fault_received=time.monotonic(),
+                                    position=HOMES[mid], velocity=0., torque=0., temperature=30., mode=0)
+                        for mid in (12, 13)}
+        self.fail_cap, self.fail_stop = fail_cap, fail_stop
+        self.drivers = [self.driver(mid) for mid in (12, 13)]
+
+    def driver(self, motor_id):
+        bus = self
+        class Driver:
+            def __init__(self):
+                self.motor_id = motor_id
+            def mode(self, mode):
+                bus.events.append((motor_id, 'mode'))
+            def control(self, position, velocity, torque, kp, kd):
+                bus.events.append((motor_id, 'control'))
+            def enable(self):
+                bus.events.append((motor_id, 'enable'))
+                bus.samples[motor_id].mode = 2
+            def stop(self):
+                if bus.fail_stop == motor_id:
+                    raise OSError('ENOBUFS')
+                bus.events.append((motor_id, 'stop'))
+        return Driver()
+
+    def refresh(self, disabled_ok=True):
+        now = time.monotonic()
+        for sample in self.samples.values():
+            sample.received = sample.fault_received = now
+
+    def snapshot(self):
+        self.refresh()
+        return {mid: Sample(**vars(s)) for mid, s in self.samples.items()}, ''
+
+    def read_runtime_torque_limit(self, motor_id):
+        self.events.append((motor_id, 'read_limit'))
+        return self.limits[motor_id]
+
+    def set_runtime_torque_limit(self, motor_id, limit):
+        if self.fail_cap == motor_id and limit < 12:
+            raise ValueError(f'Motor {motor_id} runtime torque-limit readback unavailable')
+        self.events.append((motor_id, 'limit', limit))
+        self.limits[motor_id] = limit
+        return limit
+
+
+def armed_motion(bus, torque_limit=1.5):
+    c = MotorCommands(motor_ids=(12, 13), max_kp=30., max_kd=2., home_offsets=OFFSETS,
+                      homes=lambda: dict(HOMES))
+    motion = HardwareMotion(bus, c, allowed=True, torque_limit=torque_limit)
+    sys.modules.setdefault('CyberGearDriver', NS(RunMode=NS(OPERATION_CONTROL=1)))
+    stamp = time.monotonic_ns()
+    c.accept(batch(dict(HOMES), stamp), stamp + 1)
+    c.received = time.monotonic()
+    return motion, c
+
+
+def wait_for(predicate, timeout=2.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_cap_is_written_and_verified_before_any_enable_then_restored_after_disable():
+    bus = FakeBus()
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0]), motion.status()
+        first_enable = next(i for i, e in enumerate(bus.events) if e[1] == 'enable')
+        caps = [e for e in bus.events[:first_enable] if e[1] == 'limit']
+        assert caps == [(12, 'limit', 1.5), (13, 'limit', 1.5)]
+        assert {e[0] for e in bus.events[:first_enable] if e[1] == 'read_limit'} == {12, 13}
+        motion.enable(False)
+        assert wait_for(lambda: (12, 'stop') in bus.events and (13, 'stop') in bus.events)
+        assert bus.limits == {12: 1.5, 13: 1.5}  # still capped: drives report enabled
+        for sample in bus.samples.values():
+            sample.mode = 0
+        assert wait_for(lambda: bus.limits == {12: 12.0, 13: 12.0}), bus.events
+        stops = max(i for i, e in enumerate(bus.events) if e[1] == 'stop')
+        assert all(i > stops for i, e in enumerate(bus.events) if e[1] == 'limit' and e[2] == 12.0)
+    finally:
+        motion.close()
+
+
+def test_failed_cap_write_enables_nothing_and_restores_the_capped_motor():
+    bus = FakeBus(fail_cap=13)
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[1]), motion.status()
+        assert 'readback unavailable' in motion.status()[2]
+        assert not any(e[1] in ('enable', 'mode', 'control') for e in bus.events)
+        assert wait_for(lambda: bus.limits[12] == 12.0), bus.events
+    finally:
+        motion.close()
+
+
+def test_motor_whose_stop_fails_keeps_the_reduced_cap():
+    bus = FakeBus(fail_stop=13)
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        motion.enable(False)
+        assert wait_for(lambda: (12, 'stop') in bus.events)
+        bus.samples[12].mode = 0
+        assert wait_for(lambda: bus.limits[12] == 12.0)
+        time.sleep(0.1)
+        assert bus.limits[13] == 1.5
+        assert 'Motor stop failed' in motion.status()[2] and motion.status()[1]
+    finally:
+        bus.fail_stop = None
+        motion.close()
+
+
+def test_rearm_before_restore_keeps_the_true_original():
+    bus = FakeBus()
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        motion.enable(False)
+        assert wait_for(lambda: (13, 'stop') in bus.events)
+        stamp = time.monotonic_ns()
+        c.accept(batch(dict(HOMES), stamp), stamp + 1)
+        motion.enable(True)  # drives still report enabled, so no restore happened yet
+        assert wait_for(lambda: motion.status()[0])
+        # Only the first arm reads the drives; re-arming reuses the true originals, not 1.5.
+        assert [e for e in bus.events if e[1] == 'read_limit'] == [(12, 'read_limit'), (13, 'read_limit')]
+        motion.enable(False)
+        assert wait_for(lambda: bus.events.count((13, 'stop')) == 2)
+        for sample in bus.samples.values():
+            sample.mode = 0
+        assert wait_for(lambda: bus.limits == {12: 12.0, 13: 12.0})
+    finally:
+        motion.close()
+
+
+def test_without_a_cap_no_limit_writes_happen():
+    bus = FakeBus()
+    motion, c = armed_motion(bus, torque_limit=None)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        assert not any(e[1] in ('limit', 'read_limit') for e in bus.events)
+    finally:
+        motion.close()
+
+
+@pytest.mark.parametrize('limit', [0.0, -1.0, 13.0, float('nan')])
+def test_invalid_cap_rejected(limit):
+    with pytest.raises(ValueError, match='torque limit'):
+        HardwareMotion(FakeBus(), commands(), torque_limit=limit)
