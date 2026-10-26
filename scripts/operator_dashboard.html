@@ -67,12 +67,12 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 </section>
 
 <section class="panel" id="homingPanel"><div class="eyebrow">Step 2 · Homing</div><h2>Hip/knee homing</h2>
-<p class="muted">Each leg seeks the hip pitch to its stop with the knee following, then the knee with the hip holding. Torque capped at 2.625 Nm; motors are disabled at the end. A stable contact cannot tell a stop from an obstruction.</p>
+<p class="muted">Each leg seeks the hip pitch to its stop with the knee following, then the knee with the hip holding, then releases over 3 s. Drive torque capped at 1.5 Nm; motors are disabled at the end. Homing all legs runs opposite pairs (1+4, 2+5, 3+6) at the same time. A stable contact cannot tell a stop from an obstruction.</p>
 <div class="stat"><span>Controller status</span><strong id="homeStatus">—</strong></div>
 <label class="check"><input type="checkbox" id="homeClear"><span>Path to every selected stop is clear, the leg is supported so it meets the stop and not its weight, and I am at the disconnect.</span></label>
 <label class="check" id="unvalidatedRow"><input type="checkbox" id="unvalidated"><span><strong class="warn">Legs 2–6</strong> have only operator-declared <em>unloaded</em> stop references (directions −1). This is a first powered test; I will watch the first contact.</span></label>
 <div class="legs" id="legCards"></div>
-<div class="actions"><button id="homeAll">Home all selected legs in order</button><button class="danger" id="cancel">Cancel homing</button></div>
+<div class="actions"><button id="homeAll">Home all selected legs</button><button class="danger" id="cancel">Cancel homing</button></div>
 <p class="muted" id="homeHint"></p>
 </section>
 
@@ -213,7 +213,7 @@ function renderRecording(s){const r=s.recording;
 async function poll(){try{const r=await fetch('/state',{cache:'no-store'});render(await r.json())}
  catch(e){connected=false;$('connection').textContent='Disconnected';$('connection').className='badge bad';controls()}
  setTimeout(poll,500)}
-async function home(leg){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+' in order';
+async function home(leg){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+' (opposite legs move at the same time: 1+4, 2+5, 3+6)';
  if(!confirm('Start homing '+label+'? Motors will move toward their stops.'))return;
  await post('/home',{leg:leg||null,homing_confirmed:$('homeClear').checked,unvalidated_confirmed:$('unvalidated').checked}).catch(()=>{});
  $('homeClear').checked=false;$('unvalidated').checked=false;controls()}
