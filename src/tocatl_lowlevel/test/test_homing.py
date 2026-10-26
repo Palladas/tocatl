@@ -140,6 +140,7 @@ def test_pair_failure_never_sets_ready(monkeypatch, tmp_path):
             self.completed_result = None
             self.thread = NS(join=lambda: None)
         def start(self): pass
+        def cancel(self): pass
         def status(self): return False, True, 'No fresh disabled acknowledgement'
     monkeypatch.setattr(homing, 'BoundedHipHoming', Child)
     pair = homing.LegPairHoming(hw, tmp_path/'pair.json')
@@ -280,8 +281,11 @@ def test_invalid_telemetry_selection_rejected_before_opening_can(ids):
         HardwareTelemetry(lambda: None, {'can1': 'unused'}, motor_ids=ids)
 
 
-def simulate_arbitrary_start(motor_id, start, stop):
-    c = KneeSeekConfig.from_start(motor_id, stop, start, verify_repeatability=True)
+def simulate_arbitrary_start(motor_id, start, stop, reference=None):
+    """Commissioning search against a plant whose physical stop is ``stop``; the stored
+    reference defaults to the same position."""
+    c = KneeSeekConfig.from_start(motor_id, stop if reference is None else reference, start,
+                                  verify_repeatability=True)
     seq = KneeSeekSequence(c, start, 0.)
     position = previous = reference = start
     torque = 0.
@@ -315,10 +319,56 @@ def test_homing_approaches_from_far_start_then_repeats_contacts(motor_id, stop, 
     assert seq.initial_phase == 'SEEK_STOP'
     assert seq.result()['contact_positions_rad'] == pytest.approx([stop]*3)
     assert seq.c.minimum <= start <= seq.c.maximum
-    assert first_contact_time > 60  # the previous fixed approach timeout was insufficient
+    assert first_contact_time > abs(start-stop)/seq.c.reference_speed
+    assert seq.c.initial_seek_timeout > first_contact_time
     assert seq.c.initial_seek_timeout > 60
     # First contact comes from the initial approach; later contacts require actual backoff.
     assert sum(a != b and b == 'BACKOFF' for a, b in zip(phases, phases[1:])) == 2
+
+
+def test_turn_offset_splits_whole_rotor_turns():
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD, turn_offset
+    assert ROTOR_TURN_RAD == pytest.approx(0.810734, abs=1e-6)
+    turns, residual = turn_offset(-0.0223, .8028152895399412)  # leg 1 hip, 2026-10-26 16:14
+    assert (turns, residual) == (-1, pytest.approx(-0.0144, abs=1e-4))
+    assert turn_offset(-0.8429, .8028152895399412)[0] == -2  # the earlier "-0.84" result
+    assert turn_offset(0.81, 0.0) == (1, pytest.approx(0.81 - ROTOR_TURN_RAD))
+
+
+@pytest.mark.parametrize('turns,start_above_stop', [(-1, .42), (-1, 1.5), (-2, .9), (1, .6)])
+def test_commissioning_accepts_stop_offset_by_whole_rotor_turns(turns, start_above_stop):
+    """After a power cycle the stored stop is only known modulo one rotor turn."""
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD
+    reference = .8028152895399412
+    stop = reference + turns*ROTOR_TURN_RAD - .0144
+    # start=stop+0.42 with turns=-1 is the 16:13 case: below the stored stop, which used
+    # to be rejected as "beyond the known home stop" before any motion.
+    seq, _, _ = simulate_arbitrary_start(12, stop + start_above_stop, stop, reference=reference)
+    result = seq.result()
+    assert result['contact_positions_rad'] == pytest.approx([stop]*3)
+    assert result['reference_turns'] == turns
+    assert result['reference_residual_rad'] == pytest.approx(-.0144)
+    assert result['reference_within_window']
+    assert result['reference_delta_rad'] == pytest.approx(stop - reference)
+
+
+def test_commissioning_still_rejects_residual_outside_window():
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD
+    reference = .8028152895399412
+    stop = reference - ROTOR_TURN_RAD + .1  # one turn plus a real 0.1 rad mismatch
+    with pytest.raises(ValueError, match=r'outside expected stop window: .* -1 rotor turns \+0\.1000'):
+        simulate_arbitrary_start(12, stop + .6, stop, reference=reference)
+
+
+def test_start_at_stop_one_turn_away_backs_off_first():
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD
+    reference = .8028152895399412
+    start = reference - ROTOR_TURN_RAD - .01
+    seq = KneeSeekSequence(KneeSeekConfig.from_start(12, reference, start, verify_repeatability=True), start, 0.)
+    assert seq.initial_phase == 'BACKOFF'
+    far = KneeSeekSequence(KneeSeekConfig.from_start(12, reference, start + .4, verify_repeatability=True),
+                           start + .4, 0.)
+    assert far.initial_phase == 'SEEK_STOP'
 
 
 def test_far_start_first_command_moves_toward_home():
@@ -402,7 +452,7 @@ def test_normal_pair_has_one_verified_contact_and_finishes_simulation_under_minu
         assert result['config']['contacts_required'] == 1
         assert len(result['contact_positions_rad']) == 1
         assert result['contact_verified'] and not result['independent_reapproaches']
-        assert result['config']['command_torque_limit'] == 2.625
+        assert result['config']['command_torque_limit'] == 1.5
     ready = LegReadiness()
     ready.complete([hip, knee])
     assert set(ready.snapshot()[0]) == {12, 13}
@@ -486,6 +536,7 @@ def test_normal_homing_learns_contact_outside_old_reference_and_corridor(start):
     result, _ = simulate_normal_home(12, start, .6, reference_stop=.8028)
     assert result['home_position_rad'] == pytest.approx(.6)
     assert result['reference_delta_rad'] == pytest.approx(-.2028)
+    assert (result['reference_turns'], result['reference_residual_rad']) == (0, pytest.approx(-.2028))
     assert not result['reference_within_window']
     assert result['contact_verified']
 
@@ -498,3 +549,42 @@ def test_normal_homing_does_not_limit_elastic_motion_to_start_corridor():
     command = seq.update(1.05, 0., 0., .82, .82)
     assert command.position < 1.05
     assert not seq.done
+
+
+@pytest.mark.parametrize('direction', (-1, 1))
+def test_pair_unloads_spring_then_fades_damping_before_completion(direction):
+    c = KneeSeekConfig.from_start(12, .8, .8, direction=direction)
+    seq = KneeSeekSequence(c, .8, 0.)
+    for tick in range(1, 500):
+        now = tick*.02
+        command = seq.update(.8, 0., direction*1.2, now, now)
+        if seq.phase == 'UNLOADING':
+            break
+    assert seq.phase == 'UNLOADING' and not seq.done
+    contact = seq.contacts[:]
+    commands = []
+    for tick in range(1, 152):
+        now = seq.release_started+tick*.02
+        commands.append(seq.update(.8, 0., 0., now, now))
+        if seq.done:
+            break
+    errors = [abs(command.position-.8) for command in commands]
+    assert all(b <= a+1e-12 for a,b in zip(errors, errors[1:]))
+    assert commands[0].kd == c.kd
+    assert commands[-1].kp == commands[-1].kd == commands[-1].release_scale == 0
+    assert seq.done and seq.contacts == contact
+    assert seq.result()['release_completed']
+
+
+def test_unload_preserves_feedback_and_effort_guards():
+    c = KneeSeekConfig.from_start(12, .8, .8)
+    for fault in ('stale', 'effort', 'speed'):
+        seq = KneeSeekSequence(c, .8, 0.)
+        seq.phase = 'UNLOADING'
+        seq.release_started = 0.
+        seq.release_error = -.6
+        seq.last_time, seq.last_position = .02, .8
+        with pytest.raises(ValueError):
+            seq.update(.9 if fault == 'speed' else .8, 0.,
+                       4. if fault == 'effort' else 0., .04,
+                       .5 if fault == 'stale' else .04)

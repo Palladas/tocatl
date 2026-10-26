@@ -107,8 +107,8 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 </section>
 
 <section class="panel"><div class="eyebrow">This session</div><h2>Homing results</h2>
-<div class="tablewrap"><table><thead><tr><th class="l">Motor</th><th>Home rad</th><th>Reference</th><th>Δ</th><th class="l">Window</th><th>Contacts</th></tr></thead><tbody id="resBody"><tr><td colspan="6" class="dim">No completed legs yet.</td></tr></tbody></table></div>
-<p class="muted" id="resNote">An out-of-window result in normal mode was accepted by the controller; check the leg physically before trusting it.</p>
+<div class="tablewrap"><table><thead><tr><th class="l">Motor</th><th>Home rad</th><th>Reference</th><th>Rotor turns</th><th>Residual</th><th class="l">Window</th><th>Contacts</th></tr></thead><tbody id="resBody"><tr><td colspan="7" class="dim">No completed legs yet.</td></tr></tbody></table></div>
+<p class="muted" id="resNote">Encoder positions shift by whole rotor turns (0.811 rad) across power cycles, so each home is compared with its reference as turns plus a residual; only the residual is judged. An out-of-window residual in normal mode was still accepted by the controller: check that leg physically.</p>
 </section>
 
 <section class="panel"><div class="eyebrow">Diagnostics</div><h2>Log</h2>
@@ -184,8 +184,8 @@ function renderLegs(s){const byLeg=Object.fromEntries((s.robot?.legs||[]).map(l=
   $('legState'+l).className=x?.ready?'good':'';
   $('legReason'+l).textContent=x?(x.home_positions.length?'Home '+x.home_positions.map(v=>fmt(v,4)).join(' / ')+' · ':'')+x.status_reason:''}
  $('homeStatus').textContent=s.robot?s.robot.safety_state+' · '+s.robot.status_reason:'—'}
-function renderResults(s){if(!s.results.length){$('resBody').innerHTML='<tr><td colspan="6" class="dim">No completed legs yet.</td></tr>';return}
- $('resBody').innerHTML=s.results.map(r=>`<tr><td>Leg ${r.leg} · ${r.motor_id}</td><td>${fmt(r.home_rad,4)}</td><td>${fmt(r.reference_rad,4)}</td><td class="${r.within_window===false?'bad':''}">${fmt(r.delta_rad,4)}</td><td class="l ${r.within_window===false?'bad':'good'}">${r.within_window===false?'OUTSIDE':'within'}</td><td>${r.contacts}</td></tr>`).join('')}
+function renderResults(s){if(!s.results.length){$('resBody').innerHTML='<tr><td colspan="7" class="dim">No completed legs yet.</td></tr>';return}
+ $('resBody').innerHTML=s.results.map(r=>`<tr><td>Leg ${r.leg} · ${r.motor_id}</td><td>${fmt(r.home_rad,4)}</td><td>${fmt(r.reference_rad,4)}</td><td>${r.turns===null||r.turns===undefined?'—':(r.turns>0?'+':'')+r.turns}</td><td class="${r.within_window===false?'bad':''}">${fmt(r.residual_rad,4)}</td><td class="l ${r.within_window===false?'bad':'good'}">${r.within_window===false?'OUTSIDE':'within'}</td><td>${r.contacts}</td></tr>`).join('')}
 function render(s){state=s;connected=true;$('connection').textContent='Connected';$('connection').className='badge ok';
  $('previewBanner').hidden=!s.preview_only;
  $('ctlBadge').textContent=s.busy?s.busy:s.running?'Controller running':'Controller stopped';$('ctlBadge').className='badge '+(s.running?'ok':'');

@@ -15,6 +15,17 @@ import threading
 import time
 from tocatl_lowlevel.motor_map import MOTORS, HIP_KNEE_IDS, hip_knee_ids
 
+# CyberGear output-shaft position after power-up is ambiguous by whole rotor turns
+# (7.75:1 gearbox): stored stops can be offset by multiples of this between sessions.
+ROTOR_TURN_RAD = 2 * math.pi / 7.75
+
+
+def turn_offset(position, reference):
+    """Split ``position - reference`` into whole rotor turns and the residual."""
+    delta = position - reference
+    turns = round(delta / ROTOR_TURN_RAD)
+    return turns, delta - turns * ROTOR_TURN_RAD
+
 
 @dataclass(frozen=True)
 class HomingConfig:
@@ -530,7 +541,8 @@ class SingleMotorHoming:
         failure_reason = None
         try:
             priority_ids = self.priority_motor_ids()
-            self.hardware.priority_motor = priority_ids[0] if len(priority_ids) == 1 else priority_ids
+            if not getattr(self, 'external_priority', False):
+                self.hardware.priority_motor = priority_ids[0] if len(priority_ids) == 1 else priority_ids
             priority_started = time.monotonic()
             # Allow the in-flight full telemetry sweep to complete and obtain
             # priority feedback before doing any motor writes.
@@ -663,7 +675,8 @@ class SingleMotorHoming:
                             self.stop_pending, self.faulted = True, True
                             self.reason = f'{failure_reason}; stop pending: {error}'
                         time.sleep(0.05)
-            self.hardware.priority_motor = None
+            if not getattr(self, 'external_priority', False):
+                self.hardware.priority_motor = None
             if result is not None:
                 try:
                     save_result(self.output, result)
@@ -712,7 +725,7 @@ class ContactConfig:
         if not all(math.isfinite(v) for v in vals.values()):
             raise ValueError('Contact settings must be finite')
         if any(v<=0 for k,v in vals.items() if k not in
-               ('direction','expected_stop','minimum','maximum')):
+               ('direction','expected_stop','minimum','maximum','release_duration')):
             raise ValueError('Contact gains/limits must be positive')
         if not -12.5<=self.minimum<self.expected_stop<self.maximum<=12.5:
             raise ValueError('Contact requires ordered encoder search bounds around the expected stop')
@@ -735,6 +748,7 @@ class PDCommand:
     position: float
     kp: float
     kd: float
+    release_scale: float = 1.0
 
 
 class ContactSequence:
@@ -808,7 +822,7 @@ class ImpedanceContact(SingleMotorHoming):
     def mode_samples(self, samples):
         pair = self.pair_ids
         for mid, sample in samples.items():
-            if mid not in pair and sample.mode == 2:
+            if mid not in pair and mid not in getattr(self, 'concurrent_motor_ids', ()) and sample.mode == 2:
                 raise ValueError(f'Other motor {mid} reports enabled')
         if not set(pair).issubset(samples):
             raise ValueError(f'Leg {self.config.motor_id // 10} pair feedback unavailable')
@@ -833,9 +847,12 @@ class KneeSeekConfig(ContactConfig):
     phase_timeout: float = 25.0
     initial_seek_timeout: float = 25.0
     contacts_required: int = 3
+    release_duration: float = 0.0
 
     def __post_init__(self):
         super().__post_init__()
+        if not 0 <= self.release_duration <= 5:
+            raise ValueError('Release duration must be between zero and five seconds')
         if self.motor_id not in HIP_KNEE_IDS or not 0<self.backoff<=0.1:
             raise ValueError('Endstop search requires a hip pitch or knee motor and backoff <=0.1 rad')
         if type(self.contacts_required) is not int or self.contacts_required not in (1, 3):
@@ -856,15 +873,16 @@ class KneeSeekConfig(ContactConfig):
         backoff, window, lead = math.radians(5), 0.03, 1.5
         if type(direction) is not int or direction not in (-1, 1):
             raise ValueError('Home direction must be +/-1')
-        if verify_repeatability and -direction*(position-expected_stop) < -window:
-            raise ValueError('Starting position is beyond the known home stop; verify encoder reference')
+        # No "start beyond the stop" check: across power cycles the stored stop is only
+        # known modulo ROTOR_TURN_RAD, so the start's side of it cannot be inferred.
         # These are wire-format limits, not a start-derived motion corridor.
         minimum, maximum = -12.5, 12.5
         repeat_timeout = 60.0
         initial_timeout = max(repeat_timeout, abs(position-expected_stop)/speed+lead/speed+10.0)
         return cls(motor_id=motor_id, expected_stop=expected_stop, direction=direction,
                    minimum=minimum, maximum=maximum,
-                   reference_speed=speed, minimum_contact_effort=2.3,
+                   reference_speed=speed, minimum_contact_effort=1.0,
+                   command_torque_limit=1.5, lead=1.5/1.75, release_duration=3.0,
                    contacts_required=3 if verify_repeatability else 1,
                    phase_timeout=repeat_timeout, initial_seek_timeout=initial_timeout,
                    timeout=(max(6*repeat_timeout, initial_timeout+4*repeat_timeout)
@@ -879,8 +897,9 @@ class KneeSeekSequence:
         self.started=self.phase_started=now
         self.phase_origin=position
         self.reference=position
-        away = -config.direction*(position-config.expected_stop)
-        self.phase = ('SEEK_STOP' if config.contacts_required == 1 or away > config.stop_window
+        # Back off first only when the start already sits at the stop (modulo whole turns).
+        at_stop = abs(turn_offset(position, config.expected_stop)[1]) <= config.stop_window
+        self.phase = ('SEEK_STOP' if config.contacts_required == 1 or not at_stop
                       else 'BACKOFF')
         self.initial_phase = self.phase
         self.phase_timeout = (config.initial_seek_timeout if self.phase == 'SEEK_STOP'
@@ -910,6 +929,16 @@ class KneeSeekSequence:
         if dt>0 and abs(position-self.last_position)/dt>c.overspeed:
             raise ValueError('Active search encoder overspeed')
         self.last_time,self.last_position=sample_time,position
+        if self.phase == 'UNLOADING':
+            fraction = min(1.0, (sample_time-self.release_started)/c.release_duration)
+            # Remove the loaded spring error first, keeping native damping. Then
+            # fade impedance on both drives before requesting confirmed disable.
+            spring_scale = max(0.0, 1.0-2.0*fraction)
+            gain_scale = min(1.0, 2.0*(1.0-fraction))
+            self.reference = position+self.release_error*spring_scale
+            if fraction >= 1.0:
+                self.done=True;self.phase='DONE'
+            return PDCommand(self.reference, c.kp*gain_scale, c.kd*gain_scale, gain_scale)
         if self.phase=='BACKOFF':
             if -c.direction*(position-self.phase_origin)>=c.backoff:
                 self.phase='SEEK_STOP'
@@ -932,13 +961,22 @@ class KneeSeekSequence:
             if max(self.positions)-min(self.positions)>c.settle_motion:
                 self.positions=[position];self.since=sample_time
             if sample_time-self.since>=c.dwell and len(self.positions)>=3:
-                if c.contacts_required > 1 and abs(position-c.expected_stop)>c.stop_window:
-                    raise ValueError('Loaded contact outside expected stop window')
+                if c.contacts_required > 1:
+                    turns, residual = turn_offset(position, c.expected_stop)
+                    if abs(residual) > c.stop_window:
+                        raise ValueError(f'Loaded contact outside expected stop window: {position:.4f} is '
+                                         f'{turns:+d} rotor turns {residual:+.4f} rad from {c.expected_stop:.4f}')
                 self.contacts.append(statistics.median(self.positions[-3:]))
                 if max(self.contacts)-min(self.contacts)>c.repeatability:
                     raise ValueError('Active search contacts are not repeatable')
                 if len(self.contacts)==c.contacts_required:
-                    self.done=True;self.phase='DONE'
+                    if c.release_duration:
+                        self.phase='UNLOADING'
+                        self.phase_started=now
+                        self.release_started=sample_time
+                        self.release_error=self.reference-position
+                    else:
+                        self.done=True;self.phase='DONE'
                 else:
                     self.phase='BACKOFF'
                     self.phase_timeout=c.phase_timeout
@@ -951,16 +989,20 @@ class KneeSeekSequence:
 
     def result(self):
         if not self.done:raise ValueError('Active search incomplete')
+        home = statistics.median(self.contacts)
+        turns, residual = turn_offset(home, self.c.expected_stop)
         return dict(motor_id=self.c.motor_id,bus=next(m.bus for m in MOTORS if m.motor_id == self.c.motor_id),method='active_pd_endstop_search',
                     initial_position_rad=self.initial, initial_phase=self.initial_phase,
-                    home_position_rad=statistics.median(self.contacts),
+                    home_position_rad=home,
                     previous_reference_rad=self.c.expected_stop,
-                    reference_delta_rad=statistics.median(self.contacts)-self.c.expected_stop,
-                    reference_within_window=abs(statistics.median(self.contacts)-self.c.expected_stop)<=self.c.stop_window,
+                    reference_delta_rad=home-self.c.expected_stop,
+                    reference_turns=turns, reference_residual_rad=residual,
+                    reference_within_window=abs(residual)<=self.c.stop_window,
                     contact_positions_rad=self.contacts,
                     spread_rad=max(self.contacts)-min(self.contacts),
                     independent_reapproaches=len(self.contacts)>1,
-                    contact_verified=True, device_zero_written=False,
+                    contact_verified=True, release_completed=self.c.release_duration > 0,
+                    device_zero_written=False,
                     config=asdict(self.c),completed_unix_s=time.time())
 
 
@@ -1263,23 +1305,26 @@ class HipKneeHoming:
         self.cancelled = threading.Event()
         self.thread = None
         self.child = None
+        self.children = {}
+        self.current_legs = ()
         self.active = False
         self.faulted = False
         self.reason = 'Hip/knee homing idle; yaw excluded'
 
     def status(self):
         with self.lock:
-            if self.active and self.child is not None:
-                enabled, faulted, reason = self.child.status()
-                return enabled, faulted, reason
+            if self.active and self.children:
+                states = [child.status() for child in self.children.values()]
+                return (any(s[0] for s in states), any(s[1] for s in states),
+                        '; '.join(s[2] for s in states))
             return False, self.faulted, self.reason
 
     def start(self, legs=None):
         with self.lock:
             if self.thread is not None and self.thread.is_alive():
-                if self.child is not None:
-                    _, faulted, reason = self.child.status()
-                    if faulted or self.child.stop_pending:
+                for child in list(self.children.values()) or ([self.child] if self.child else []):
+                    _, faulted, reason = child.status()
+                    if faulted or child.stop_pending:
                         raise ValueError(f'Homing fault recovery still active: {reason}. '
                                          'Stop must be confirmed before retry.')
                 raise ValueError('Leg homing already active')
@@ -1295,10 +1340,12 @@ class HipKneeHoming:
                     raise ValueError(f'Leg {leg}: both motors must be selected in telemetry_motor_ids')
             self.selected_legs = selected
             self.current_leg = selected[0]
+            self.current_legs = selected
             for leg in selected:
                 self.readiness.invalidate('Homing started; pair not ready', leg)
             self.cancelled.clear()
             self.child = None
+            self.children = {}
             self.reason = 'Homing starting'
             self.active, self.faulted = True, False
             self.thread = threading.Thread(target=self.run, daemon=True)
@@ -1307,17 +1354,60 @@ class HipKneeHoming:
     def cancel(self):
         with self.lock:
             self.cancelled.set()
-            self.readiness.invalidate('Homing cancelled/disarmed; rehome required', self.current_leg)
-            if self.child is not None:
-                self.child.cancel()
+            for leg in self.current_legs or (self.current_leg,):
+                self.readiness.invalidate('Homing cancelled/disarmed; rehome required', leg)
+            for child in self.children.values():
+                child.cancel()
+
+    def groups(self):
+        remaining = set(self.selected_legs)
+        groups = []
+        for leg in self.selected_legs:
+            if leg not in remaining:
+                continue
+            opposite = (leg+2) % 6+1
+            group = (leg, opposite) if opposite in remaining else (leg,)
+            remaining.difference_update(group)
+            groups.append(group)
+        return groups
 
     def run(self):
         try:
-            for leg in self.selected_legs:
-                self.current_leg = leg
+            for group in self.groups():
+                self.current_legs = group
+                self.current_leg = group[0]
+                with self.lock:
+                    self.children = {}
+                    self.child = None
                 if self.cancelled.is_set():
                     raise ValueError('Homing cancelled')
-                self._home_leg(leg)
+                self.concurrent_motor_ids = tuple(mid for leg in group for mid in hip_knee_ids(leg))
+                self.hardware.priority_motor = self.concurrent_motor_ids
+                errors = []
+                def home(leg):
+                    try:
+                        self._home_leg(leg)
+                    except Exception as error:
+                        with self.lock:
+                            errors.append(str(error))
+                        self.cancel()
+                threads = [threading.Thread(target=home, args=(leg,), daemon=True) for leg in group]
+                for thread in threads:
+                    thread.start()
+                while any(thread.is_alive() for thread in threads):
+                    # A drive can be faulted while its worker is still retrying stop.
+                    # Cancel the other leg immediately, without waiting for recovery.
+                    with self.lock:
+                        failed = any(child.status()[1] for child in self.children.values())
+                    if failed:
+                        self.cancel()
+                    for thread in threads:
+                        thread.join(.01)
+                self.hardware.priority_motor = None
+                if errors:
+                    raise ValueError('; '.join(errors))
+                if self.cancelled.is_set():
+                    raise ValueError('Homing cancelled')
             selected = ', '.join(str(leg) for leg in self.selected_legs)
             with self.lock:
                 self.reason = (f'Leg {selected} pitch/knee READY; yaw excluded; motors disabled'
@@ -1326,10 +1416,12 @@ class HipKneeHoming:
         except Exception as error:
             with self.lock:
                 self.faulted, self.reason = True, str(error)
-                self.readiness.invalidate(self.reason, self.current_leg)
+                for leg in self.current_legs:
+                    self.readiness.invalidate(self.reason, leg)
             logging.getLogger(__name__).exception('Hip/knee homing failed for leg %s', self.current_leg)
         finally:
             with self.lock:
+                self.hardware.priority_motor = None
                 self.active = False
 
     def _home_leg(self, leg):
@@ -1352,9 +1444,9 @@ class HipKneeHoming:
                     raise ValueError('Fresh disabled, fault-free pair required before torque-limit writes')
             for mid in pair:
                 original_limits[mid] = self.hardware.read_runtime_torque_limit(mid)
-                if original_limits[mid] < 2.625:
+                if original_limits[mid] < 1.5:
                     raise ValueError(f'Motor {mid} existing torque limit below homing profile; no increase permitted')
-                self.hardware.set_runtime_torque_limit(mid, 2.625)
+                self.hardware.set_runtime_torque_limit(mid, 1.5)
             stages = ((hip_id, profile.hip_stop, profile.hip_direction),
                       (knee_id, profile.knee_stop, profile.knee_direction))
             for mid, stop, direction in stages:
@@ -1371,16 +1463,19 @@ class HipKneeHoming:
                 with self.lock:
                     if self.cancelled.is_set():
                         raise ValueError('Leg homing cancelled')
-                    self.child = worker_type(self.hardware, config,
+                    child = worker_type(self.hardware, config,
                         str(Path(self.output).with_suffix(f'.motor-{mid}.json')), hip_reference)
-                    child = self.child
+                    self.child = child
+                    self.children[leg] = child
+                    child.external_priority = True
+                    child.concurrent_motor_ids = self.concurrent_motor_ids
                     child.deadline = deadline
                     child.start()
                 child.thread.join()
-                if self.cancelled.is_set():
-                    raise ValueError('Leg homing cancelled')
                 if child.completed_result is None or child.status()[1]:
                     raise ValueError(child.status()[2])
+                if self.cancelled.is_set():
+                    raise ValueError('Leg homing cancelled')
                 results.append(child.completed_result)
             self.restore_limits(original_limits)
             original_limits.clear()
@@ -1447,9 +1542,10 @@ class NativeImpedanceHoming:
             if mid == self.config.motor_id:
                 pd = command
             elif self.config.motor_id % 10 == 2:
-                pd = PDCommand(feedback.position, 0.0, self.config.kd)
+                pd = PDCommand(feedback.position, 0.0, self.config.kd*command.release_scale)
             else:
-                pd = PDCommand(self.knee_hip_reference, self.hold_kp, self.hold_kd)
+                pd = PDCommand(self.knee_hip_reference, self.hold_kp*command.release_scale,
+                               self.hold_kd*command.release_scale)
             # Bound spring demand too; the drive caps stiffness+damping together.
             error = self.config.command_torque_limit/pd.kp if pd.kp else 0.0
             target = max(feedback.position-error, min(feedback.position+error, pd.position))

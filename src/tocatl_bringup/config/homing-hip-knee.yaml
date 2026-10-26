@@ -1,7 +1,7 @@
 # All six hip-pitch/knee pairs. Yaw motors (including disconnected 51) are excluded.
 # Stop candidates for legs 2–6 are operator-declared unloaded references.
 # Finish direction checks and loaded-stop verification before powered homing.
-# /motors/home homes homing.legs sequentially; /motors/leg_N/home selects one leg.
+# /motors/home runs opposite groups (1,4), (2,5), (3,6); individual services select one leg.
 motor_controller:
   ros__parameters:
     backend: hardware

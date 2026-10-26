@@ -274,12 +274,25 @@ class RecordTests(ControllerBase):
 
 
 class ResultTests(unittest.TestCase):
-    def test_committed_result_surfaces_reference_mismatch(self):
-        rows = d.homing_results(ROOT / 'config' / 'hip-knee-homing.json')
-        hip = next(r for r in rows if r['motor_id'] == 12)
-        self.assertFalse(hip['within_window'])
-        self.assertAlmostEqual(hip['home_rad'], -0.8429, places=3)
+    def test_committed_result_reports_rotor_turns_and_residual(self):
+        rows = {r['motor_id']: r for r in d.homing_results(ROOT / 'config' / 'hip-knee-homing.json')}
+        self.assertEqual(len(rows), 12)  # 2026-10-26 15:45 all-leg run
+        hip = rows[12]
+        self.assertAlmostEqual(hip['home_rad'], -0.0269, places=3)
+        self.assertEqual(hip['turns'], -1)  # derived: the file predates turn-aware homing
+        self.assertAlmostEqual(hip['residual_rad'], -0.0190, places=3)
         self.assertEqual(hip['contacts'], 1)
+        self.assertAlmostEqual(rows[32]['residual_rad'], -0.2274, places=3)  # leg 3 hip outlier
+
+    def test_turn_fields_from_new_results_are_used(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.json') as f:
+            json.dump({'legs': {'1': {'mode': 'commissioning', 'motors': [dict(
+                motor_id=12, home_position_rad=-0.0223, previous_reference_rad=0.8028, reference_delta_rad=-0.8251,
+                reference_turns=-1, reference_residual_rad=-0.0144, reference_within_window=True,
+                contact_positions_rad=[-0.0223] * 3)]}}}, f)
+            f.flush()
+            row = d.homing_results(f.name)[0]
+        self.assertEqual((row['turns'], row['residual_rad'], row['within_window']), (-1, -0.0144, True))
 
     def test_missing_or_partial_file(self):
         self.assertEqual(d.homing_results('/nonexistent/x.json'), [])

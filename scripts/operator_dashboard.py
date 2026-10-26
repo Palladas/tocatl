@@ -40,6 +40,8 @@ PROFILES = {
 ROBOT_PROCESSES = ('motor_controller', 'cybergear_telemetry', 'motor_telemetry', 'hold_capture',
                    'tocatl_diagnostics', 'run_spider_art_cue', 'joint_endpoint_probe', 'leg_auto_zero')
 STALE_AFTER_S = 1.0
+# CyberGear output position is ambiguous by whole rotor turns across power cycles (7.75:1).
+ROTOR_TURN_RAD = 2 * math.pi / 7.75
 RECORD_PERIOD_S = 0.1
 RECORD_MAX_S = 120
 RECORD_LABEL = re.compile(r'[A-Za-z0-9_-]{1,60}')
@@ -134,7 +136,13 @@ def homing_results(path):
     rows = []
     for leg, record in sorted(data.get('legs', {}).items(), key=lambda item: int(item[0])):
         for motor in record.get('motors', []):
+            turns, residual = motor.get('reference_turns'), motor.get('reference_residual_rad')
+            delta = motor.get('reference_delta_rad')
+            if turns is None and isinstance(delta, (int, float)):  # results written before turn-aware homing
+                turns = round(delta / ROTOR_TURN_RAD)
+                residual = delta - turns * ROTOR_TURN_RAD
             rows.append(dict(leg=int(leg), mode=record.get('mode'), motor_id=motor.get('motor_id'),
+                             turns=turns, residual_rad=residual,
                              home_rad=motor.get('home_position_rad'),
                              reference_rad=motor.get('previous_reference_rad'),
                              delta_rad=motor.get('reference_delta_rad'),
