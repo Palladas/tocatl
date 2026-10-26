@@ -162,8 +162,10 @@ class RosBridge:
     def __init__(self):
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
+        from rclpy.signals import SignalHandlerOptions
         from tocatl_interfaces.msg import RobotState
-        rclpy.init()
+        # main() owns SIGINT/SIGTERM so shutdown always stops the controller first.
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         self.rclpy = rclpy
         self.node = rclpy.create_node('tocatl_operator_dashboard')
         self.lock = threading.Lock()
@@ -506,6 +508,12 @@ def main():
         except ImportError as error:
             print(f'ROS unavailable ({error}); source ROS and install/setup.bash. Starting preview-only.', flush=True)
     dashboard = Dashboard(bridge, args.preview_only)
+    # Under nohup/background shells SIGINT starts ignored and would be inherited by the
+    # controller; take both signals explicitly so either one stops the controller cleanly.
+    def interrupt(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
     if not dashboard.preview_only:
         dashboard.refresh_can()
     try:
