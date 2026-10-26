@@ -28,6 +28,7 @@ td:first-child,th:first-child,td.l,th.l{text-align:left}tr.legrow td{color:var(-
 .tablewrap{overflow-x:auto}.dim{color:#6b7a7c}.good{color:var(--mint)}.bad{color:var(--red)}.warn{color:var(--amber)}
 .legs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.leg{border:1px solid var(--line);border-radius:10px;padding:12px}.leg.ready{border-color:#42604e}.leg h3{margin:0 0 6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .leg p{margin:6px 0;font-size:12px;color:var(--muted);min-height:2.6em}.leg button{width:100%}
+.recfields{display:grid;grid-template-columns:2fr 1fr;gap:10px}.recfields label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:13px}.recfields input{background:#0c1113;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px}
 .stat{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #26313a}.stat strong{text-align:right;word-break:break-word}
 #error{color:var(--red);min-height:1.2em;margin:0 0 12px}
 footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1px solid var(--line);padding:12px 4vw;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;backdrop-filter:blur(12px)}footer p{margin:0;font-size:13px;color:var(--muted)}
@@ -78,6 +79,14 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <section class="panel"><div class="status" style="justify-content:space-between"><div><div class="eyebrow">Live</div><h2>Motor telemetry</h2></div><span class="badge" id="telBadge">No robot_state</span></div>
 <p class="muted" id="telNote">Raw encoder radians from /robot_state. Mode 0 reset (disabled) · 1 calibration · 2 running (enabled).</p>
 <div class="tablewrap"><table><thead><tr><th class="l">Motor</th><th class="l">Bus</th><th class="l">Fresh</th><th class="l">Mode</th><th>Position rad</th><th>Velocity rad/s</th><th>Torque Nm</th><th>Temp °C</th><th class="l">Faults</th></tr></thead><tbody id="telBody"></tbody></table></div>
+</section>
+
+<section class="panel"><div class="eyebrow">Measurement</div><h2>Record telemetry</h2>
+<p class="muted">Samples the robot_state this page already receives at 10 Hz into a JSONL file in the run folder. Adds no CAN traffic and commands nothing. For kinematics measurements, keep motors disabled (Level 1) and move legs by hand; see docs/kinematics.md for the hip-only, knee-only and foot-pose recordings.</p>
+<div class="recfields"><label>Label<input id="recLabel" value="leg1-hip-only" maxlength="60" pattern="[A-Za-z0-9_-]{1,60}"></label><label>Seconds<input id="recDuration" type="number" value="20" min="1" max="120" step="1"></label></div>
+<div class="actions"><button class="primary" id="record">Record</button><button id="recStop">Stop recording</button></div>
+<p class="muted" id="recStatus">No recording this session.</p>
+<pre id="recFiles" hidden></pre>
 </section>
 </div>
 
@@ -142,6 +151,9 @@ function controls(){
  $('homeHint').textContent=!homingRun?'Start the Level 2 controller to home.':!robotFresh()?'Waiting for fresh robot_state.':!$('homeClear').checked?'Confirm the homing checklist.':'Only one homing request at a time; the controller rejects repeats while running.';
  for(const b of document.querySelectorAll('[data-reset]'))b.disabled=blocked||run||s.preview_only;
  $('canRefresh').disabled=blocked||s.preview_only;
+ const recActive=!!s?.recording?.active;
+ $('record').disabled=blocked||!run||recActive||!/^[A-Za-z0-9_-]{1,60}$/.test($('recLabel').value);
+ $('recStop').disabled=!connected||!recActive;
 }
 function buildLegPick(){$('legPick').innerHTML=[1,2,3,4,5,6].map(l=>`<label><input type="checkbox" value="${l}" ${legs.has(l)?'checked':''}>Leg ${l}</label>`).join('');
  for(const i of $('legPick').querySelectorAll('input'))i.onchange=()=>{i.checked?legs.add(+i.value):legs.delete(+i.value);plan();controls()}}
@@ -193,7 +205,11 @@ function render(s){state=s;connected=true;$('connection').textContent='Connected
  $('alertBar').hidden=!alerts.length;$('alertBar').className='alertbar'+(alerts.length&&alerts.every(a=>a[1])?' caution':'');$('alertBar').textContent=alerts.map(a=>a[0]).join('  ·  ');
  renderCan(s);renderTelemetry(s);renderLegs(s);renderResults(s);
  const logEl=$('log'),atEnd=logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-20;logEl.textContent=s.logs.join('\n')||'No output yet.';if(atEnd)logEl.scrollTop=logEl.scrollHeight;
- $('events').textContent=s.events.join('\n')||'None.';controls()}
+ $('events').textContent=s.events.join('\n')||'None.';renderRecording(s);controls()}
+function renderRecording(s){const r=s.recording;
+ $('recStatus').textContent=!r?(s.running?'Ready. Name the recording after what you will move.':'Start a controller to record.'):
+  (r.active?'Recording "'+r.label+'" · '+r.samples+' samples · '+Math.max(0,Math.round(r.duration_s-(Date.now()/1000-r.started)))+' s left':'Last: "'+r.label+'" · '+r.samples+' samples'+(r.skipped?' · '+r.skipped+' skipped (stale)':''));
+ $('recFiles').hidden=!s.recordings.length;$('recFiles').textContent=s.recordings.length?(s.run_dir+'/recordings/\n'+s.recordings.join('\n')):''}
 async function poll(){try{const r=await fetch('/state',{cache:'no-store'});render(await r.json())}
  catch(e){connected=false;$('connection').textContent='Disconnected';$('connection').className='badge bad';controls()}
  setTimeout(poll,500)}
@@ -209,6 +225,9 @@ const stop=()=>{if(confirm('Stop the controller? Homing is cancelled first, then
 $('stopCtl').onclick=$('stopCtl2').onclick=stop;
 $('cancel').onclick=$('cancel2').onclick=()=>post('/disarm').catch(()=>{});
 $('homeAll').onclick=()=>home(null);
+$('record').onclick=()=>post('/record',{label:$('recLabel').value,duration_s:Number($('recDuration').value)}).catch(()=>{});
+$('recStop').onclick=()=>post('/record_stop').catch(()=>{});
+$('recLabel').oninput=controls;
 $('canRefresh').onclick=()=>post('/can_refresh').catch(()=>{});
 for(const b of document.querySelectorAll('[data-reset]'))b.onclick=()=>{const buses=b.dataset.reset==='both'?['can0','can1']:[b.dataset.reset];
  if(confirm('Bring '+buses.join(' and ')+' down and up at 1 Mbit/s?'))post('/can_reset',{buses}).catch(()=>{})};

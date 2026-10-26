@@ -126,7 +126,7 @@ class CanTests(unittest.TestCase):
         self.assertEqual(dash.busy, '')
 
 
-class ControllerTests(unittest.TestCase):
+class ControllerBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -149,6 +149,8 @@ class ControllerTests(unittest.TestCase):
             self.dash.start_controller(request)
         return popen
 
+
+class ControllerTests(ControllerBase):
     def test_preview_cannot_start_or_reset(self):
         preview = d.Dashboard(None)
         self.assertTrue(preview.preview_only)
@@ -228,6 +230,47 @@ class ControllerTests(unittest.TestCase):
         self.start(legs=[1])
         self.bridge.snapshot.return_value = (dict(position=None), 0.1)
         json.dumps(self.dash.state(), allow_nan=False)
+
+
+class RecordTests(ControllerBase):
+    motors = [dict(motor_id=12, valid=True, fresh=True, position=0.5, velocity=0.0, torque=0.1, enabled=False),
+              dict(motor_id=13, valid=True, fresh=False, position=0.7, velocity=0.0, torque=0.0, enabled=False),
+              dict(motor_id=51, valid=False, fresh=False, position=None, velocity=None, torque=None, enabled=False)]
+
+    def wait_done(self):
+        for _ in range(100):
+            if not self.dash.recording['active']:
+                return
+            time.sleep(0.02)
+        self.fail('recording did not finish')
+
+    def test_record_requires_controller_and_valid_input(self):
+        with self.assertRaises(ValueError):
+            self.dash.record(dict(label='leg1-hip-only', duration_s=1))  # no controller
+        self.start(profile='telemetry')
+        for label, duration in (('', 1), ('../x', 1), ('a b', 1), ('x' * 61, 1), ('ok', 0), ('ok', 121), ('ok', 1.5)):
+            with self.assertRaises(ValueError):
+                self.dash.record(dict(label=label, duration_s=duration))
+
+    def test_record_writes_only_fresh_motors_and_skips_stale_state(self):
+        self.start(profile='telemetry')
+        states = iter([(dict(motors=self.motors), 0.05), (None, None), (dict(motors=self.motors), 5.0)])
+        self.bridge.snapshot.side_effect = lambda: next(states, (dict(motors=self.motors), 0.05))
+        with patch.object(d, 'RECORD_PERIOD_S', 0.01):
+            self.dash.record(dict(label='leg1-hip-only', duration_s=1))
+            with self.assertRaises(ValueError):
+                self.dash.record(dict(label='again', duration_s=1))
+            time.sleep(0.15)
+            self.dash.stop_recording()
+            self.wait_done()
+        lines = [json.loads(l) for l in Path(self.dash.recording['path']).read_text().splitlines()]
+        self.assertGreater(len(lines), 2)
+        self.assertEqual(self.dash.recording['skipped'], 2)
+        self.assertEqual(lines[0]['motors'], {'12': dict(position=0.5, velocity=0.0, torque=0.1, enabled=False)})
+        self.assertEqual(lines[0]['label'], 'leg1-hip-only')
+        self.assertTrue(Path(self.dash.recording['path']).parent.parent == Path(self.dash.run_dir))
+        self.assertEqual(self.dash.state()['recordings'], [Path(self.dash.recording['path']).name])
+        self.bridge.call.assert_not_called()
 
 
 class ResultTests(unittest.TestCase):

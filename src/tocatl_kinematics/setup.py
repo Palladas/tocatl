@@ -6,5 +6,9 @@ setup(name=name, version='0.1.0', packages=find_packages(exclude=['test']),
                   ('share/' + name, ['package.xml'])],
       tests_require=['pytest'], install_requires=['setuptools'], zip_safe=True,
       maintainer='Matthew Hutchinson', maintainer_email='matthewhutchinson@ucla.edu',
-      description='Recovered TOCATL leg geometry and kinematics', license='MIT',
-      entry_points={'console_scripts': ['geometry_reference = tocatl_kinematics.legacy_geometry:main']})
+      description='TOCATL leg/body kinematics, gait planning and measurement fitting', license='MIT',
+      entry_points={'console_scripts': [
+          'geometry_reference = tocatl_kinematics.legacy_geometry:main',
+          'tocatl_ik = tocatl_kinematics.cli:ik_main',
+          'tocatl_gait = tocatl_kinematics.cli:gait_main',
+          'tocatl_fit = tocatl_kinematics.cli:fit_main']})

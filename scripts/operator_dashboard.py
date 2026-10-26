@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import shlex
 import signal
@@ -39,6 +40,9 @@ PROFILES = {
 ROBOT_PROCESSES = ('motor_controller', 'cybergear_telemetry', 'motor_telemetry', 'hold_capture',
                    'tocatl_diagnostics', 'run_spider_art_cue', 'joint_endpoint_probe', 'leg_auto_zero')
 STALE_AFTER_S = 1.0
+RECORD_PERIOD_S = 0.1
+RECORD_MAX_S = 120
+RECORD_LABEL = re.compile(r'[A-Za-z0-9_-]{1,60}')
 
 
 def clean(value):
@@ -235,6 +239,8 @@ class Dashboard:
         self.can = []
         self.can_error = ''
         self.busy = ''
+        self.recording = None
+        self.record_stop = threading.Event()
 
     def event(self, text):
         stamp = datetime.now().strftime('%H:%M:%S')
@@ -410,11 +416,69 @@ class Dashboard:
             with self.lock:
                 self.busy = ''
 
+    def record(self, data):
+        """Sample the robot_state already being received into JSONL; sends nothing to motors."""
+        label = data.get('label')
+        duration = data.get('duration_s')
+        if not isinstance(label, str) or not RECORD_LABEL.fullmatch(label):
+            raise ValueError('Label: 1-60 letters, digits, - or _ (e.g. leg2-hip-only)')
+        if type(duration) is not int or not 1 <= duration <= RECORD_MAX_S:
+            raise ValueError(f'Choose 1 through {RECORD_MAX_S} seconds')
+        with self.lock:
+            if not self.running() or self.bridge is None:
+                raise ValueError('Start a controller first; recording reads its robot_state')
+            if self.recording and self.recording['active']:
+                raise ValueError('A recording is already running')
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            path = Path(self.run_dir) / 'recordings' / f'{stamp}-{label}.jsonl'
+            self.recording = dict(label=label, path=str(path), duration_s=duration, samples=0,
+                                  skipped=0, active=True, started=time.time())
+            self.record_stop.clear()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        threading.Thread(target=self.record_worker, args=(path, label, duration), daemon=True).start()
+        self.event(f'Recording "{label}" for {duration} s')
+
+    def record_worker(self, path, label, duration):
+        start = time.monotonic()
+        try:
+            with open(path, 'w') as stream:
+                while not self.record_stop.is_set() and time.monotonic() - start < duration:
+                    robot, age = self.bridge.snapshot()
+                    if robot is None or age > STALE_AFTER_S:
+                        with self.lock:
+                            self.recording['skipped'] += 1
+                    else:
+                        motors = {m['motor_id']: dict(position=m['position'], velocity=m['velocity'],
+                                                      torque=m['torque'], enabled=m['enabled'])
+                                  for m in robot['motors'] if m['valid'] and m['fresh']}
+                        stream.write(json.dumps(clean(dict(
+                            t=round(time.monotonic() - start, 3), unix=time.time(), label=label,
+                            robot_age_s=age, motors=motors)), allow_nan=False) + '\n')
+                        with self.lock:
+                            self.recording['samples'] += 1
+                    self.record_stop.wait(RECORD_PERIOD_S)
+        finally:
+            with self.lock:
+                self.recording['active'] = False
+                samples, skipped = self.recording['samples'], self.recording['skipped']
+            self.event(f'Recording "{label}" saved: {samples} samples'
+                       + (f', {skipped} skipped for stale robot_state' if skipped else ''))
+
+    def stop_recording(self):
+        self.record_stop.set()
+
+    def recordings(self):
+        if not self.run_dir:
+            return []
+        folder = Path(self.run_dir) / 'recordings'
+        return sorted(p.name for p in folder.glob('*.jsonl')) if folder.is_dir() else []
+
     def state(self):
         robot, age = self.bridge.snapshot() if self.bridge else (None, None)
         with self.lock:
             running = self.running()
             results = homing_results(self.output_path) if self.output_path else []
+            recording = dict(self.recording) if self.recording else None
             return clean(dict(
                 preview_only=self.preview_only, busy=self.busy, running=running,
                 pid=self.proc.pid if self.proc else None, profile=self.profile,
@@ -426,10 +490,12 @@ class Dashboard:
                 logs=list(self.logs), events=list(self.events), can=self.can, can_error=self.can_error,
                 robot=robot if running else None, robot_age_s=age if running else None,
                 stale_after_s=STALE_AFTER_S, out_of_service=OUT_OF_SERVICE,
-                unvalidated_legs=UNVALIDATED_LEGS,
+                unvalidated_legs=UNVALIDATED_LEGS, recording=recording, recordings=self.recordings(),
+                record_max_s=RECORD_MAX_S,
                 profiles={k: v['label'] for k, v in PROFILES.items()}))
 
     def close(self):
+        self.stop_recording()
         if self.running():
             self.shutdown(self.proc)
 
@@ -440,7 +506,8 @@ def serve(dashboard, port):
     actions = {'start': dashboard.start_controller, 'stop': lambda _: dashboard.stop_controller(),
                'disarm': lambda _: dashboard.disarm(), 'home': dashboard.home,
                'can_reset': dashboard.reset_can, 'can_refresh': lambda _: dashboard.refresh_can(),
-               'plan': dashboard.plan}
+               'plan': dashboard.plan, 'record': dashboard.record,
+               'record_stop': lambda _: dashboard.stop_recording()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
