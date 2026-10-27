@@ -219,8 +219,15 @@ class MotorController(Node):
         motion = getattr(self, 'motion', None)
         homing_fault = homing is not None and homing.status()[1]
         motion_fault = motion is not None and motion.status()[1]
-        if state.safety_state == RobotState.FAULT and (motion_fault or not homing_fault):
+        # A motion fault stays latched until the next arm. Clear readiness once per new
+        # fault, not on every update: otherwise legs homed after the fault were cleared
+        # again within 20 ms, and since arming needs READY legs only a restart recovered
+        # (2026-10-27 15:41).
+        fault_count = getattr(motion, 'fault_count', 0) if motion is not None else 0
+        if (state.safety_state == RobotState.FAULT and (motion_fault or not homing_fault) and
+                fault_count != getattr(self, 'readiness_cleared_for_fault', None)):
             self.readiness.invalidate(f'Controller fault: {state.status_reason}; rehome required')
+            self.readiness_cleared_for_fault = fault_count
         ready = self.hardware is not None and self.readiness.check(self.hardware)
         homes, _ = self.readiness.snapshot()
         for leg_id in range(1, 7):

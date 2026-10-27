@@ -146,6 +146,10 @@ class MotorCommands:
                 raise ValueError(f'Motor {target.motor_id} position step exceeds max_position_step_rad')
 
 
+class Disarmed(Exception):
+    """An operator disarm noticed partway through a command pass: a normal stop, not a fault."""
+
+
 class HardwareMotion:
     """Single worker owns driver mode/enable/control/stop operations.
 
@@ -164,6 +168,7 @@ class HardwareMotion:
         self.torque_limit = torque_limit
         self.original_limits = {}
         self.pending_restore = {}
+        self.fault_count = 0  # increments on every new fault, so callers can act once per fault
         self.lock = threading.Lock()
         self.requested = False
         self.armed = False
@@ -222,7 +227,7 @@ class HardwareMotion:
                                 for target in targets:
                                     with self.lock:
                                         if not self.requested or self.quit.is_set():
-                                            raise ValueError('Operator disarmed')
+                                            raise Disarmed('Operator disarmed')
                                     if self.commands.snapshot()[1] >= self.commands.timeout:
                                         raise ValueError('Motor command watchdog expired')
                                     driver = by_id[target.motor_id]
@@ -236,7 +241,7 @@ class HardwareMotion:
                                     # Check timeout/disable between driver writes, too.
                                     with self.lock:
                                         if not self.requested:
-                                            raise ValueError('Operator disarmed')
+                                            raise Disarmed('Operator disarmed')
                                     if self.commands.snapshot()[1] >= self.commands.timeout:
                                         raise ValueError('Motor command watchdog expired')
                                     by_id[target.motor_id].control(
@@ -249,9 +254,24 @@ class HardwareMotion:
                         touched = self.stop_motors(touched)
                         with self.lock:
                             self.armed = False
+                            if not self.faulted:
+                                self.reason = 'Operator disarmed'
                         self.restore_torque_limits()  # motors that did stop, while others retry
                     else:
                         self.restore_torque_limits()
+                except Disarmed:
+                    # A disarm arriving while targets are being written (a 12-motor pass
+                    # takes ~120 ms) used to be raised as an error and latch a FAULT,
+                    # clearing every leg's homing (2026-10-27 15:40). Stop normally;
+                    # stop_motors() still faults if a stop fails.
+                    touched = self.stop_motors(touched)
+                    held = {d.motor_id for d in touched}
+                    for motor_id in [m for m in self.original_limits if m not in held]:
+                        self.pending_restore[motor_id] = (self.original_limits.pop(motor_id), time.monotonic())
+                    with self.lock:
+                        self.armed = False
+                        self.requested = False
+                    self.commands.clear()
                 except Exception as error:
                     touched = self.stop_motors(touched)
                     # Capped but never enabled (e.g. a later cap write failed): restore once
@@ -263,6 +283,7 @@ class HardwareMotion:
                         self.armed = False
                         self.requested = False
                         self.faulted = True
+                        self.fault_count += 1
                         self.reason = str(error) + ('; motor stop pending' if touched else '')
                     self.commands.clear()
                 self.quit.wait(0.02)
@@ -291,6 +312,7 @@ class HardwareMotion:
             with self.lock:
                 self.reason = 'Motor stop failed: ' + '; '.join(errors)
                 self.faulted = True
+                self.fault_count += 1
         return remaining
 
     def apply_torque_cap(self, targets):

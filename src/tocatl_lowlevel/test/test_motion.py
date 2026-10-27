@@ -214,3 +214,88 @@ def test_without_a_cap_no_limit_writes_happen():
 def test_invalid_cap_rejected(limit):
     with pytest.raises(ValueError, match='torque limit'):
         HardwareMotion(FakeBus(), commands(), torque_limit=limit)
+
+
+def test_disarm_during_a_command_pass_is_a_normal_stop_not_a_fault():
+    """2026-10-27 15:40: the player's disarm landed mid-pass and latched a FAULT."""
+    bus = FakeBus()
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        faults_before = motion.fault_count
+        original = bus.drivers[0].control
+
+        def disarm_mid_pass(*command):  # during motor 12's write, before motor 13's
+            motion.enable(False)
+            return original(*command)
+        bus.drivers[0].control = disarm_mid_pass
+        assert wait_for(lambda: (12, 'stop') in bus.events and (13, 'stop') in bus.events)
+        armed, faulted, reason = motion.status()
+        assert (armed, faulted, reason) == (False, False, 'Operator disarmed')
+        assert motion.fault_count == faults_before
+        bus.drivers[0].control = original
+        for sample in bus.samples.values():
+            sample.mode = 0
+        assert wait_for(lambda: bus.limits == {12: 12.0, 13: 12.0})  # caps restored as on any stop
+    finally:
+        motion.close()
+
+
+def test_disarm_between_passes_reports_operator_disarmed():
+    bus = FakeBus()
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        motion.enable(False)
+        assert wait_for(lambda: (13, 'stop') in bus.events)
+        assert wait_for(lambda: motion.status() == (False, False, 'Operator disarmed'))
+    finally:
+        motion.close()
+
+
+def test_real_faults_count_once_each():
+    bus = FakeBus(fail_cap=13)
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[1])
+        assert motion.fault_count == 1
+        time.sleep(0.1)
+        assert motion.fault_count == 1  # latched, not re-counted every loop
+    finally:
+        motion.close()
+
+
+def test_latched_motion_fault_clears_readiness_once_so_rehoming_sticks():
+    """2026-10-27 15:41: legs rehomed after a motion fault were cleared again every update."""
+    pytest.importorskip('rclpy')
+    from tocatl_interfaces.msg import RobotState
+    from tocatl_lowlevel.homing import LegReadiness
+    from tocatl_lowlevel.motor_controller import MotorController
+
+    def results(leg, homes):
+        return [dict(motor_id=leg * 10 + j, home_position_rad=h, contact_positions_rad=[h],
+                     contact_verified=True, config=dict(contacts_required=1)) for j, h in zip((2, 3), homes)]
+    now = time.monotonic()
+    samples = {mid: Sample(received=now, fault_received=now, position=0.1, velocity=0., torque=0.,
+                           temperature=25., mode=0) for mid in range(11, 64)}
+    hardware = NS(snapshot=lambda: ({mid: Sample(**{**vars(s), 'received': time.monotonic(),
+                                                    'fault_received': time.monotonic()})
+                                     for mid, s in samples.items()}, ''), stale_after=1.5)
+    motion = NS(fault_count=1, status=lambda: (False, True, 'Operator disarmed'))
+    node = NS(homing=NS(status=lambda: (False, False, 'idle')), motion=motion,
+              readiness=LegReadiness(), hardware=hardware)
+    node.readiness.complete(results(1, (0.1, 0.1)))
+
+    def update():
+        state = RobotState()
+        state.safety_state, state.status_reason = RobotState.FAULT, 'Operator disarmed'
+        MotorController.add_leg_status(node, state)
+        return {leg.leg_id: leg.ready for leg in state.legs}
+    assert update()[1] is False                      # the new fault clears readiness once
+    node.readiness.complete(results(1, (0.1, 0.1)))   # operator rehomes leg 1
+    assert update()[1] is True and update()[1] is True  # the same latched fault does not clear it again
+    motion.fault_count = 2                            # a genuinely new fault does
+    assert update()[1] is False
