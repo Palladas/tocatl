@@ -85,6 +85,14 @@ class CommandTests(unittest.TestCase):
             self.assertIn(expected, argv)
         self.assertFalse(any('allow_hardware_motion' in a for a in d.controller_command('homing', [1], False, 'o')))
 
+    def test_standing_profile_includes_yaw_except_51(self):
+        argv = d.controller_command('standing', [1, 5], False, '/tmp/x/out.json')
+        files = [argv[i + 1] for i, a in enumerate(argv) if a == '--params-file']
+        self.assertEqual(files[-1], str(d.CONFIG / 'motion-standing.yaml'))
+        self.assertIn('actuation_motor_ids:=[11,12,13,52,53]', argv)
+        self.assertIn('telemetry_motor_ids:=[11,12,13,52,53]', argv)
+        self.assertIn('allow_hardware_motion:=true', argv)
+
     def test_player_command_validates_inputs(self):
         argv = d.player_command([2, 1], 'pose', {'r_m': 0.35, 'z_m': -0.05, 'loops': 1}, dry_run=True,
                                 actuated_legs=[1, 2, 3])
@@ -93,7 +101,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn('--r-m', argv)
         self.assertEqual(argv[-1], '--dry-run')
         for legs, kind, values in (([1], 'walk', {}), ([], 'pose', {}), ([7], 'pose', {}), ([1, 1], 'pose', {}),
-                                   ([1], 'pose', {'kp': 100.0}), ([1], 'pose', {'r_m': float('nan')}),
+                                   ([1], 'pose', {'torque_nm': 5.0}), ([1], 'pose', {'r_m': float('nan')}),
                                    ([1], 'circle', {'loops': 1.5}), ([1], 'pose', {'r_m': True})):
             with self.assertRaises(ValueError):
                 d.player_command(legs, kind, values, dry_run=False, actuated_legs=[1, 2, 3, 4, 5, 6])
@@ -252,6 +260,20 @@ class ControllerTests(ControllerBase):
         self.assertEqual(self.bridge.call.call_args.args[:2], ('motors/enable', 'setbool'))
         self.assertEqual(self.bridge.call.call_args.kwargs, {'data': False})
         self.assertEqual(proc.signals, [d.signal.SIGINT])
+
+    def test_standing_needs_both_confirmations_and_declares_yaw(self):
+        with patch.object(d.subprocess, 'Popen') as popen, self.assertRaises(ValueError):
+            self.dash.start_controller(dict(profile='standing', legs=[1], checklist_confirmed=True,
+                                            motion_confirmed=True))
+        popen.assert_not_called()
+        with self.assertRaises(ValueError):
+            self.dash.declare_yaw({})  # no standing session yet
+        self.start(profile='standing', legs=[1], motion_confirmed=True, standing_confirmed=True)
+        self.dash.declare_yaw({})
+        self.assertEqual(self.bridge.call.call_args.args[:2], ('motors/declare_yaw_reference', 'trigger'))
+        self.bridge.call.return_value = (False, 'Yaw reference not recorded: motor 11 must be disabled (mode 2)')
+        with self.assertRaisesRegex(ValueError, 'must be disabled'):
+            self.dash.declare_yaw({})
 
     def test_level3_needs_motion_confirmation_and_allows_homing(self):
         with patch.object(d.subprocess, 'Popen') as popen, self.assertRaises(ValueError):

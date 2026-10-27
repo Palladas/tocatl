@@ -17,7 +17,7 @@ main{max-width:1400px;margin:auto;padding:24px 4vw 140px}
 .banner{padding:12px 16px;background:#27382f;border:1px solid #42604e;border-radius:9px;margin-bottom:20px}
 .grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:20px}
 .panel{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:12px;margin-bottom:20px}
-.choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.choice{text-align:left;padding:14px}.choice[aria-pressed=true]{background:#294339;border-color:var(--mint)}.choice span{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-top:6px}
+.choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}.choice{text-align:left;padding:14px}.choice[aria-pressed=true]{background:#294339;border-color:var(--mint)}.choice span{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-top:6px}
 .check{display:flex;gap:10px;align-items:flex-start;margin:8px 0;line-height:1.45}.check input{margin-top:4px}
 .legpick{display:flex;gap:8px;flex-wrap:wrap}.legpick label{border:1px solid var(--line);border-radius:8px;padding:6px 12px;display:flex;gap:6px;align-items:center}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
@@ -47,12 +47,16 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <div class="choices" id="profiles">
 <button class="choice" data-profile="telemetry" aria-pressed="true"><strong>Level 1 · Read-only telemetry</strong><span>hardware.yaml · polls 17 motors on both buses (51 excluded). No enable, mode change or motion.</span></button>
 <button class="choice" data-profile="homing" aria-pressed="false"><strong>Level 2 · Hip/knee homing</strong><span>homing-hip-knee.yaml + allow_homing. Polls the 12 pitch/knee motors; homing runs only when you press a Home button.</span></button>
-<button class="choice" data-profile="motion" aria-pressed="false"><strong>Level 3 · Feet-in-air motion</strong><span>Homing plus motion for the selected legs: hip pitch and knee only, kp ≤ 30, every drive capped at 1.5 Nm. Nothing moves until you arm.</span></button>
+<button class="choice" data-profile="motion" aria-pressed="false"><strong>Level 3 · Feet-in-air motion</strong><span>Homing plus motion for the selected legs: hip pitch and knee only, kp ≤ 30, every drive capped at 1.5 Nm, up to 5 rad/s. Nothing moves until you arm.</span></button>
+<button class="choice" data-profile="standing" aria-pressed="false"><strong>Level 4 · Standing</strong><span>Homing plus motion with yaw held at a declared pose: kp ≤ 100, every drive capped at 8 Nm (2× rated). Motor 51 stays out, so leg 5's yaw is free.</span></button>
 </div>
 <div id="homingOptions" hidden>
 <h3>Legs in homing.legs</h3><div class="legpick" id="legPick"></div>
 <label class="check"><input type="checkbox" id="commissioning"><span>Commissioning mode: 3 contacts per joint, 0.05 rad/s, strict reference check, 600 s budget. Off is normal mode: 1 contact, 0.2 rad/s, 60 s per leg, reference mismatch is recorded but not rejected.</span></label>
 <small>Results go to a new session folder in ~/tocatl-runs, never to the tracked config/ file.</small>
+<div id="standingOptions" hidden>
+<label class="check"><input type="checkbox" id="standingConfirm"><span><strong class="warn">Level 4:</strong> the robot rests on flat, clear ground with nothing under the body or legs; a person is spotting and the disconnect is in reach. Drives may reach 8 Nm, twice their rating: keep holds short and watch temperature.</span></label>
+</div>
 <div id="motionOptions" hidden>
 <label class="check"><input type="checkbox" id="motionConfirm"><span><strong class="warn">Level 3:</strong> the robot is supported with every selected foot clear of the floor, the body and the other legs. Yaw motors stay unpowered. Motion starts only after I arm, and the physical disconnect is the stop.</span></label>
 </div>
@@ -76,24 +80,31 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label class="check"><input type="checkbox" id="homeClear"><span>Path to every selected stop is clear, the leg is supported so it meets the stop and not its weight, and I am at the disconnect.</span></label>
 <label class="check" id="unvalidatedRow"><input type="checkbox" id="unvalidated"><span><strong class="warn">Legs 2–6</strong> have only operator-declared <em>unloaded</em> stop references (directions −1). This is a first powered test; I will watch the first contact.</span></label>
 <div class="legs" id="legCards"></div>
+<div class="actions" id="yawRow" hidden><button id="declareYaw">Declare yaw references (hold yaw where it is)</button><small class="muted">After homing, with the legs posed for standing; motors must be disabled. Re-declare after any rehome or fault.</small></div>
 <div class="actions"><button id="homeAll">Home all selected legs (pairs 1+4, 2+5, 3+6)</button><button class="danger" id="cancel">Cancel homing</button></div>
 <p class="muted" id="homeHint"></p>
 </section>
 
-<section class="panel" id="motionPanel" hidden><div class="eyebrow">Step 3 · Motion</div><h2>Feet-in-air motion</h2>
-<p class="muted">Moves each selected foot in its own leg plane, hip pitch and knee only, starting and ending at the measured pose. Preview plans from the live homes and checks joint limits, the controller envelope and speed; nothing is sent. Run streams hold commands; then Arm starts the motion. Legs must be homed and READY in this session.</p>
+<section class="panel" id="motionPanel" hidden><div class="eyebrow">Step 3 · Motion</div><h2>Leg motion</h2>
+<p class="muted">Moves each selected foot in its own leg plane (hip pitch and knee), starting and ending at the measured pose; in Level 4 every declared yaw is held where it is. Stand moves all selected legs together and checks each joint's load torque against the drive cap from the robot mass. Preview plans from the live homes and checks joint limits, the controller envelope and speed; nothing is sent. Run streams hold commands; then Arm starts the motion. Legs must be homed and READY in this session.</p>
 <h3>Legs to move</h3><div class="legpick" id="motionLegs"></div>
 <small>Every leg in this session is commanded; legs you don't tick hold their current pose while armed.</small>
 <div class="recfields motionfields">
-<label>Motion<select id="motionKind"><option value="nudge">Nudge (joint change and back)</option><option value="pose">Pose (foot to r, z and back)</option><option value="circle">Circle (loops around r, z)</option></select></label>
+<label>Motion<select id="motionKind"><option value="nudge">Nudge (joint change and back)</option><option value="pose">Pose (foot to r, z and back)</option><option value="circle">Circle (loops around r, z)</option><option value="stand">Stand (place feet, rise, hold, lower)</option></select></label>
 <label>Max motor speed (rad/s)<input id="mSpeed" type="number" value="0.5" min="0.02" max="5" step="0.1"></label>
 <label data-kinds="nudge">Hip pitch change (rad)<input id="mDPitch" type="number" value="-0.2" min="-0.8" max="0.8" step="0.05"></label>
 <label data-kinds="nudge">Knee change (rad)<input id="mDKnee" type="number" value="-0.2" min="-0.8" max="0.8" step="0.05"></label>
-<label data-kinds="pose circle">Foot r from yaw axis (m)<input id="mR" type="number" value="0.35" step="0.01"></label>
+<label data-kinds="pose circle stand">Foot r from yaw axis (m)<input id="mR" type="number" value="0.35" step="0.01"></label>
+<label data-kinds="stand">Resting height (m)<input id="mRest" type="number" value="0.10" min="0.02" max="0.6" step="0.01"><small>Mounting plane above the ground while the body rests.</small></label>
+<label data-kinds="stand">Standing height (m)<input id="mStand" type="number" value="0.20" min="0.03" max="0.6" step="0.01"></label>
+<label data-kinds="stand">Foot clearance (m)<input id="mClear" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
+<label data-kinds="stand">Robot mass (kg)<input id="mMass" type="number" value="" min="1" max="50" step="0.5" placeholder="weigh it"><small>Used to check every joint's load torque against the cap.</small></label>
 <label data-kinds="pose circle">Foot z from mounting plane (m)<input id="mZ" type="number" value="-0.05" step="0.01"></label>
 <label data-kinds="circle">Circle radius (m)<input id="mRadius" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
 <label data-kinds="circle">Loops<input id="mLoops" type="number" value="1" min="1" max="5" step="1"></label>
 <label>Hold at target (s)<input id="mHold" type="number" value="1" min="0" max="10" step="0.5"></label>
+<label>Stiffness kp (Nm/rad)<input id="mKp" type="number" value="30" min="1" max="100" step="1"></label>
+<label>Damping kd (Nm·s/rad)<input id="mKd" type="number" value="2" min="0" max="5" step="0.1"></label>
 </div>
 <small>Negative changes move away from the compressed stop (thigh lowers, knee unfolds).</small>
 <label class="check"><input type="checkbox" id="motionClear"><span>The whole path is clear for every selected foot, and I am at the disconnect.</span></label>
@@ -163,9 +174,10 @@ function controls(){
  const s=state,blocked=!connected||!s||pending||!!s.busy,run=s?.running,homingRun=run&&(s.profile==='homing'||s.profile==='motion');
  for(const b of $('profiles').children)b.disabled=blocked||run;
  for(const i of $('legPick').querySelectorAll('input'))i.disabled=blocked||run;
- $('commissioning').disabled=$('motionConfirm').disabled=blocked||run;
+ $('commissioning').disabled=$('motionConfirm').disabled=$('standingConfirm').disabled=blocked||run;
+ $('yawRow').hidden=!(run&&s.yaw_profile);$('declareYaw').disabled=blocked||!run||!s.yaw_profile||!!s.player_running;
  for(const i of $('checklist').querySelectorAll('input'))i.disabled=blocked||run;
- $('start').disabled=blocked||run||s.preview_only||!checklistDone()||(profile!=='telemetry'&&!legs.size)||(profile==='motion'&&!$('motionConfirm').checked);
+ $('start').disabled=blocked||run||s.preview_only||!checklistDone()||(profile!=='telemetry'&&!legs.size)||((profile==='motion'||profile==='standing')&&!$('motionConfirm').checked)||(profile==='standing'&&!$('standingConfirm').checked);
  $('stopCtl').disabled=$('stopCtl2').disabled=blocked||!run;
  $('cancel').disabled=$('cancel2').disabled=!connected||pending||!run;
  $('startHint').textContent=!s?'':s.preview_only?'Preview-only server.':s.busy?s.busy+'…':run?'Controller running. Stop it before changing profile.':!canOk()?'CAN links are not UP / ERROR-ACTIVE at 1 Mbit/s; the server will refuse to start.':!checklistDone()?'Confirm every checklist item to enable Start.':'Ready to start.';
@@ -174,7 +186,7 @@ function controls(){
  const canHome=leg=>!blocked&&homingRun&&robotFresh()&&$('homeClear').checked&&(!needsAck(leg)||$('unvalidated').checked);
  for(const b of $('legCards').querySelectorAll('button'))b.disabled=!canHome(Number(b.dataset.leg));
  $('homeAll').disabled=!canHome(null)||!(s?.legs||[]).length;
- $('homeHint').textContent=!homingRun?'Start the Level 2 controller to home.':!robotFresh()?'Waiting for fresh robot_state.':!$('homeClear').checked?'Confirm the homing checklist.':'Only one homing request at a time; the controller rejects repeats while running.';
+ $('homeHint').textContent=!homingRun?'Start a homing controller (Level 2, 3 or 4) to home.':!robotFresh()?'Waiting for fresh robot_state.':!$('homeClear').checked?'Confirm the homing checklist.':'Only one homing request at a time; the controller rejects repeats while running.';
  for(const b of document.querySelectorAll('[data-reset]'))b.disabled=blocked||run||s.preview_only;
  $('canRefresh').disabled=blocked||s.preview_only;
  const motionRun=run&&s.motion_profile,player=!!s?.player_running,armed=s?.robot?.safety_state==='ARMED';
@@ -195,7 +207,7 @@ function buildLegPick(){$('legPick').innerHTML=[1,2,3,4,5,6].map(l=>`<label><inp
 function plan(){clearTimeout(planTimer);planTimer=setTimeout(async()=>{if(state?.running)return;
  try{const r=await fetch('/plan',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify({profile,legs:[...legs],commissioning:$('commissioning').checked})});
   const b=await r.json();$('command').textContent=r.ok?b.result:b.error}catch(e){}},150)}
-function setProfile(p){profile=p;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===p);$('homingOptions').hidden=p==='telemetry';$('motionOptions').hidden=p!=='motion';plan();controls()}
+function setProfile(p){profile=p;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===p);$('homingOptions').hidden=p==='telemetry';$('motionOptions').hidden=!(p==='motion'||p==='standing');$('standingOptions').hidden=p!=='standing';plan();controls()}
 function renderCan(s){const rows=[['Link','operstate'],['Controller state','state'],['Bitrate','bitrate'],['TX queue','txqlen'],['TX packets','tx_packets'],['TX errors','tx_errors'],['TX dropped','tx_dropped'],['RX packets','rx_packets'],['RX errors','rx_errors'],['Bus errors','bus_errors'],['Restarts','restarts']];
  const by=Object.fromEntries(s.can.map(c=>[c.name,c]));
  $('canBody').innerHTML=s.can.length?rows.map(([label,k])=>`<tr><td>${label}</td>${['can0','can1'].map(b=>{const v=by[b]?.[k];const cls=(k==='operstate'&&v!=='UP')||(k==='state'&&v!=='ERROR-ACTIVE')||(k==='bitrate'&&v!==1000000)?'bad':(k==='operstate'||k==='state')?'good':'';return `<td class="${cls}">${v??'—'}</td>`}).join('')}</tr>`).join(''):'<tr><td colspan="3" class="dim">Not read yet.</td></tr>';
@@ -232,7 +244,8 @@ function render(s){state=s;connected=true;$('connection').textContent='Connected
  $('sAge').textContent=s.running&&s.robot_age_s!==null?fmt(s.robot_age_s,2)+' s':'—';
  $('sRun').textContent=s.run_dir||'—';
  if(s.running&&s.command)$('command').textContent=s.command;
- if(s.running&&s.profile&&s.profile!==profile){profile=s.profile;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===profile);$('homingOptions').hidden=profile==='telemetry';$('motionOptions').hidden=profile!=='motion'}
+ if(s.running&&s.profile&&s.profile!==profile){profile=s.profile;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===profile);$('homingOptions').hidden=profile==='telemetry';$('motionOptions').hidden=!(profile==='motion'||profile==='standing');$('standingOptions').hidden=profile!=='standing';
+  $('mKp').max=profile==='standing'?100:30;$('mKd').max=profile==='standing'?5:2;if(profile==='standing'){$('mKp').value=80;$('mKd').value=4}}
  const alerts=[];if(s.robot?.safety_state==='FAULT')alerts.push(['FAULT: '+s.robot.status_reason,'']);
  if(s.running&&!robotFresh())alerts.push(['robot_state not arriving; check the controller log. Use the physical disconnect if motion is uncertain.','']);
  if(s.running&&s.robot&&!s.robot.telemetry_fresh&&s.profile)alerts.push(['Some motor telemetry is stale or missing.','caution']);
@@ -248,8 +261,8 @@ function renderMotion(s){const want=(s.motion_profile?s.legs:[]).join(',');
  $('motionLog').hidden=!s.motion_log.length;const el=$('motionLog'),atEnd=el.scrollTop+el.clientHeight>=el.scrollHeight-20;
  el.textContent=s.motion_log.join('\n');if(atEnd)el.scrollTop=el.scrollHeight}
 function motionKind(){const k=$('motionKind').value;for(const l of document.querySelectorAll('[data-kinds]'))l.hidden=!l.dataset.kinds.split(' ').includes(k)}
-function motionPayload(){const k=$('motionKind').value,n=id=>Number($(id).value),v={max_speed_rad_s:n('mSpeed'),hold_s:n('mHold')};
- if(k==='nudge'){v.d_pitch_rad=n('mDPitch');v.d_knee_rad=n('mDKnee')}else{v.r_m=n('mR');v.z_m=n('mZ')}
+function motionPayload(){const k=$('motionKind').value,n=id=>Number($(id).value),v={max_speed_rad_s:n('mSpeed'),hold_s:n('mHold'),kp:n('mKp'),kd:n('mKd')};
+ if(k==='nudge'){v.d_pitch_rad=n('mDPitch');v.d_knee_rad=n('mDKnee')}else if(k==='stand'){v.r_m=n('mR');v.rest_height_m=n('mRest');v.stand_height_m=n('mStand');v.clearance_m=n('mClear');v.mass_kg=n('mMass')}else{v.r_m=n('mR');v.z_m=n('mZ')}
  if(k==='circle'){v.radius_m=n('mRadius');v.loops=Math.round(n('mLoops'))}
  return {legs:[...$('motionLegs').querySelectorAll('input:checked')].map(i=>Number(i.value)),kind:k,values:v}}
 function renderRecording(s){const r=s.recording;
@@ -266,7 +279,9 @@ async function home(leg){const label=leg?'leg '+leg:'legs '+state.legs.join(', '
 for(const b of $('profiles').children)b.onclick=()=>setProfile(b.dataset.profile);
 for(const i of $('checklist').querySelectorAll('input'))i.onchange=controls;
 $('commissioning').onchange=plan;$('homeClear').onchange=$('unvalidated').onchange=controls;
-$('start').onclick=async()=>{try{await post('/start',{profile,legs:[...legs],commissioning:$('commissioning').checked,checklist_confirmed:checklistDone(),motion_confirmed:$('motionConfirm').checked});for(const i of $('checklist').querySelectorAll('input'))i.checked=false;$('motionConfirm').checked=false}catch(e){}};
+$('start').onclick=async()=>{try{await post('/start',{profile,legs:[...legs],commissioning:$('commissioning').checked,checklist_confirmed:checklistDone(),motion_confirmed:$('motionConfirm').checked,standing_confirmed:$('standingConfirm').checked});for(const i of $('checklist').querySelectorAll('input'))i.checked=false;$('motionConfirm').checked=$('standingConfirm').checked=false}catch(e){}};
+$('motionConfirm').onchange=$('standingConfirm').onchange=controls;
+$('declareYaw').onclick=()=>{if(confirm('Record every session yaw motor\'s current position as its reference? Yaw will be held there while armed.'))post('/declare_yaw',{}).catch(()=>{})};
 const stop=()=>{if(confirm('Stop the controller? Homing is cancelled first, then the node is interrupted.'))post('/stop').catch(()=>{})};
 $('stopCtl').onclick=$('stopCtl2').onclick=stop;
 $('cancel').onclick=$('cancel2').onclick=()=>post('/disarm').catch(()=>{});
@@ -274,7 +289,7 @@ $('homeAll').onclick=()=>home(null);
 $('motionKind').onchange=motionKind;$('motionClear').onchange=controls;
 $('motionPreview').onclick=()=>post('/motion_preview',motionPayload()).catch(()=>{});
 $('motionRun').onclick=async()=>{try{await post('/motion_run',{...motionPayload(),motion_confirmed:$('motionClear').checked});$('motionClear').checked=false;controls()}catch(e){}};
-$('arm').onclick=()=>{if(confirm('Arm the selected legs? The motion starts immediately; drives are capped at 1.5 Nm.'))post('/arm',{arm_confirmed:true}).catch(()=>{})};
+$('arm').onclick=()=>{const cap=state?.yaw_profile?'8 Nm':'1.5 Nm';if(confirm('Arm? The motion starts immediately; drives are capped at '+cap+'.'))post('/arm',{arm_confirmed:true}).catch(()=>{})};
 $('motionStop').onclick=()=>post('/motion_stop').catch(()=>{});
 $('record').onclick=()=>post('/record',{label:$('recLabel').value,duration_s:Number($('recDuration').value)}).catch(()=>{});
 $('recStop').onclick=()=>post('/record_stop').catch(()=>{});

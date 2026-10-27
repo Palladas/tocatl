@@ -136,3 +136,49 @@ not a watchdog timeout, keeps the legs' homing readiness. A controller FAULT cle
 leg's readiness, so a rehome is needed after one.
 
 Not yet run on the robot. Start with one leg, a nudge, and 0.05–0.1 rad/s.
+
+## Level 4 · Standing
+
+The Level 4 profile loads `homing-hip-knee.yaml` and then `motion-standing.yaml`. Pranav
+authorized these limits on 2026-10-27:
+- Every drive is capped at **8 Nm**, twice the CyberGear's 4 Nm continuous rating. The cap is
+  written and read back before enable, and restored after a confirmed disable.
+- kp ≤ 100, kd ≤ 5, speed ≤ 5 rad/s, each target within 0.5 rad of the measured position.
+- Feedforward torque is unchanged at 0.5 Nm. The 45 °C readiness guard still stops motion.
+
+The session commands the selected legs' **yaw** motors too, except disconnected 51. Leg 5's
+yaw is therefore free, and the leg can swing sideways under load.
+
+**Workflow**
+1. Rest the robot on flat, clear ground. Tick the checklist, the motion confirmation and the
+   standing confirmation, then **Start controller**.
+2. Home every selected leg, in normal mode.
+3. Pose the legs, then press **Declare yaw references**. This records each yaw's current
+   position as its reference, and only if the motor is disabled, fault-free and fresh. Arming
+   needs it. A rehome, lost or faulted feedback, or a controller fault clears it, and it must
+   then be declared again.
+4. In **Leg motion**, choose **Stand** and select all session legs. Enter:
+   - **r:** foot distance out from the yaw axis.
+   - **Resting height:** the mounting plane's height above the ground while the body rests.
+   - **Standing height.**
+   - **Clearance.**
+   - **The robot's mass,** which you get by weighing it.
+
+   Use kp around 80 and kd around 4.
+5. **Preview.** The plan is refused if any joint's static load torque (mass shared equally by
+   the moving legs) exceeds 90% of the 8 Nm cap. It warns above the 4 Nm rating.
+   - Example: 12 kg on six legs at r 0.25 m needs about 4.9 Nm per hip and 1 Nm per knee.
+   - Moving the feet in (smaller r) lowers hip torque and raises knee torque.
+6. **Run motion**, then **Arm**. The sequence: place the feet, touch down, rise, hold, lower,
+   lift off, return.
+
+**Not modelled:**
+- dynamic loads
+- foot slip
+- leg 5's free yaw
+- unequal load sharing
+- the controller's command loop, at about 7 Hz with all motors
+
+Begin with a low standing height and a short hold. Stopping the motion (stall, Stop or a
+fault) disables the motors and lowers the body under gravity, so keep the body over soft
+blocks.

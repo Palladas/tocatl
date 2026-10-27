@@ -34,17 +34,21 @@ OUT_OF_SERVICE = (51,)
 UNVALIDATED_LEGS = (2, 3, 4, 5, 6)
 PROFILES = {
     'telemetry': dict(label='Level 1 · Read-only telemetry', params=[CONFIG / 'hardware.yaml'],
-                      homing=False, motion=False),
+                      homing=False, motion=False, yaw=False),
     'homing': dict(label='Level 2 · Hip/knee homing', params=[CONFIG / 'homing-hip-knee.yaml'],
-                   homing=True, motion=False),
+                   homing=True, motion=False, yaw=False),
     'motion': dict(label='Level 3 · Feet-in-air motion',
                    params=[CONFIG / 'homing-hip-knee.yaml', CONFIG / 'motion-feet-air.yaml'],
-                   homing=True, motion=True),
+                   homing=True, motion=True, yaw=False),
+    'standing': dict(label='Level 4 · Standing',
+                     params=[CONFIG / 'homing-hip-knee.yaml', CONFIG / 'motion-standing.yaml'],
+                     homing=True, motion=True, yaw=True),
 }
-MOTION_KINDS = ('nudge', 'pose', 'circle')
-# Player flags the dashboard may pass, with their types (planner validates the values).
+MOTION_KINDS = ('nudge', 'pose', 'circle', 'stand')
+# Player flags the dashboard may pass, with their types (planner and player validate the values).
 MOTION_FIELDS = {'d_pitch_rad': float, 'd_knee_rad': float, 'r_m': float, 'z_m': float, 'radius_m': float,
-                 'loops': int, 'hold_s': float, 'max_speed_rad_s': float}
+                 'loops': int, 'hold_s': float, 'max_speed_rad_s': float, 'rest_height_m': float,
+                 'stand_height_m': float, 'clearance_m': float, 'mass_kg': float, 'kp': float, 'kd': float}
 # Any of these owning a bus makes starting a controller or resetting a link unsafe.
 ROBOT_PROCESSES = ('motor_controller', 'cybergear_telemetry', 'motor_telemetry', 'hold_capture',
                    'tocatl_diagnostics', 'run_spider_art_cue', 'joint_endpoint_probe', 'leg_auto_zero')
@@ -91,7 +95,9 @@ def controller_command(profile, legs=LEGS, commissioning=False, output_path=None
     if PROFILES[profile]['motion']:
         # Only the selected legs' hip pitch/knee are polled and commandable: fewer motors keep
         # bus sweeps short, which the 0.1 rad position-step check depends on.
-        motors = '[' + ','.join(str(leg * 10 + j) for leg in legs for j in (2, 3)) + ']'
+        joints = (1, 2, 3) if PROFILES[profile]['yaw'] else (2, 3)
+        motors = '[' + ','.join(str(leg * 10 + j) for leg in legs for j in joints
+                                if leg * 10 + j not in OUT_OF_SERVICE) + ']'
         args += ['-p', 'allow_hardware_motion:=true',
                  '-p', f'actuation_motor_ids:={motors}', '-p', f'telemetry_motor_ids:={motors}']
     return args
@@ -329,7 +335,9 @@ class Dashboard:
             raise ValueError('Confirm every item of the physical checklist first')
         profile = data.get('profile')
         if profile in PROFILES and PROFILES[profile]['motion'] and data.get('motion_confirmed') is not True:
-            raise ValueError('Confirm the Level 3 motion conditions first')
+            raise ValueError('Confirm the motion conditions first')
+        if profile in PROFILES and PROFILES[profile]['yaw'] and data.get('standing_confirmed') is not True:
+            raise ValueError('Confirm the standing conditions first')
         legs, commissioning = data.get('legs', list(LEGS)), data.get('commissioning', False)
         controller_command(profile, legs, commissioning, 'check')  # validate before side effects
         if not EXECUTABLE.is_file():
@@ -456,7 +464,7 @@ class Dashboard:
         argv = player_command(legs, data.get('kind'), data.get('values', {}), dry_run, session_legs)
         with self.lock:
             if not self.running() or not PROFILES[self.profile]['motion']:
-                raise ValueError('Start the Level 3 motion controller first')
+                raise ValueError('Start a motion controller (Level 3 or 4) first')
             if any(leg not in self.legs for leg in legs):
                 raise ValueError('Move only legs selected for this controller session')
             if self.player_running() or self.busy:
@@ -486,10 +494,20 @@ class Dashboard:
             log.write(f'[exit {code}]\n')
         self.event(f'Motion player exited with status {code}')
 
+    def declare_yaw(self, data):
+        """Record the session's yaw motors' current positions as references (no motion)."""
+        with self.lock:
+            if not self.running() or not PROFILES[self.profile]['yaw']:
+                raise ValueError('Start the Level 4 standing controller first')
+        success, message = self.bridge.call('motors/declare_yaw_reference', 'trigger')
+        self.event(f'Yaw references: {message}')
+        if not success:
+            raise ValueError(message)
+
     def arm(self, data):
         with self.lock:
             if not self.running() or not PROFILES[self.profile]['motion']:
-                raise ValueError('Start the Level 3 motion controller first')
+                raise ValueError('Start a motion controller (Level 3 or 4) first')
             if not self.player_running() or self.player_mode != 'run':
                 raise ValueError('Run a motion first; arming needs its commands streaming')
             if data.get('arm_confirmed') is not True:
@@ -620,6 +638,7 @@ class Dashboard:
                 stale_after_s=STALE_AFTER_S, out_of_service=OUT_OF_SERVICE,
                 unvalidated_legs=UNVALIDATED_LEGS, recording=recording, recordings=self.recordings(),
                 motion_profile=bool(self.profile and PROFILES[self.profile]['motion']),
+                yaw_profile=bool(self.profile and PROFILES[self.profile]['yaw']),
                 player_running=self.player_running(), player_mode=self.player_mode,
                 motion_log=list(self.motion_log), motion_kinds=MOTION_KINDS,
                 record_max_s=RECORD_MAX_S,
@@ -641,7 +660,8 @@ def serve(dashboard, port):
                'record_stop': lambda _: dashboard.stop_recording(),
                'motion_preview': lambda data: dashboard.motion(data, dry_run=True),
                'motion_run': lambda data: dashboard.motion(data, dry_run=False),
-               'motion_stop': lambda _: dashboard.stop_player(), 'arm': dashboard.arm}
+               'motion_stop': lambda _: dashboard.stop_player(), 'arm': dashboard.arm,
+               'declare_yaw': dashboard.declare_yaw}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
