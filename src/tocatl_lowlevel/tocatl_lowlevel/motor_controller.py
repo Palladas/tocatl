@@ -182,8 +182,11 @@ class MotorController(Node):
                 active = self.homing.active
                 if self.homing_was_active and not active:
                     _, failed, message = self.homing.status()
-                    log = self.get_logger().error if failed else self.get_logger().info
-                    log(message)
+                    # Separate call sites: rclpy rejects one call site logging at two severities.
+                    if failed:
+                        self.get_logger().error(message)
+                    else:
+                        self.get_logger().info(message)
                 self.homing_was_active = active
             state = build_hardware_state(self.hardware, self.get_clock().now().to_msg(),
                                          self.sequence, self.body_frame)

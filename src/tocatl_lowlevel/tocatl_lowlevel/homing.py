@@ -20,6 +20,10 @@ from tocatl_lowlevel.motor_map import MOTORS, HIP_KNEE_IDS, hip_knee_ids
 ROTOR_TURN_RAD = 2 * math.pi / 7.75
 
 
+class StaleFeedback(ValueError):
+    """Feedback too old to act on; before any enable this is retried, never ignored."""
+
+
 def turn_offset(position, reference):
     """Split ``position - reference`` into whole rotor turns and the residual."""
     delta = position - reference
@@ -509,14 +513,14 @@ class SingleMotorHoming:
         # controller. Deployment still requires one exclusive CAN command owner.
         for mid, sample in self.mode_samples(samples).items():
             if sample.received is None or not 0 <= now-sample.received < self.hardware.stale_after:
-                raise ValueError(f'Motor {mid} mode feedback unavailable/stale')
+                raise StaleFeedback(f'Motor {mid} mode feedback unavailable/stale')
             if mid not in self.owned_motor_ids() or initial:
                 if sample.mode != 0:
                     raise ValueError(f'Motor {mid} must be disabled')
         s = samples[c.motor_id]
         if (s.fault_received is None or not 0 <= now-s.fault_received < c.freshness or
                 s.received is None or not 0 <= now-s.received < c.freshness):
-            raise ValueError('Selected motor telemetry/fault status unavailable or stale '
+            raise StaleFeedback('Selected motor telemetry/fault status unavailable or stale '
                              f'(state age={None if s.received is None else now-s.received}, '
                              f'fault age={None if s.fault_received is None else now-s.fault_received})')
         if s.faults or s.state_faults:
@@ -573,22 +577,46 @@ class SingleMotorHoming:
             # Validate numerical feedback/envelope before any enable operation.
             sequence.update(s.position, s.velocity, s.torque, s.received, now)
             from CyberGearDriver import RunMode
-            with self.hardware.tx_lock:
-                if self.cancelled.is_set():
-                    raise ValueError('Homing cancelled')
-                self.checked_sample(initial=True)
-                touched = True
-                for motor in owned:
-                    motor.mode(RunMode.OPERATION_CONTROL)
-                    self.preload_owned(motor, self.hardware.snapshot()[0])
-                    motor.enable()
-                enabled_at = time.monotonic()
-                for motor in self.hardware.drivers:
-                    if motor.motor_id not in priority_ids:
-                        continue
-                    motor.request_motor_state()
-                    if hasattr(motor, 'request_parameter'):
-                        motor.request_parameter('faultSta')
+            # Concurrent legs queue for the shared CAN lock, and nothing is polled while
+            # another leg enables, so feedback can age past the freshness limit while
+            # waiting. Then release the lock, let telemetry refresh and re-check; never
+            # enable on stale feedback.
+            retry_deadline = time.monotonic()+self.feedback_timeout
+            while True:
+                attempt = time.monotonic()
+                with self.hardware.tx_lock:
+                    if self.cancelled.is_set():
+                        raise ValueError('Homing cancelled')
+                    try:
+                        self.checked_sample(initial=True)
+                    except StaleFeedback:
+                        if time.monotonic() >= retry_deadline:
+                            raise
+                        stale = True
+                    else:
+                        stale = False
+                        touched = True
+                        for motor in owned:
+                            motor.mode(RunMode.OPERATION_CONTROL)
+                            self.preload_owned(motor, self.hardware.snapshot()[0])
+                            motor.enable()
+                        enabled_at = time.monotonic()
+                        # Only this worker's motors: requesting every concurrent leg's
+                        # motors here would hold the lock long enough to starve the others.
+                        for motor in owned:
+                            motor.request_motor_state()
+                            if hasattr(motor, 'request_parameter'):
+                                motor.request_parameter('faultSta')
+                if not stale:
+                    break
+                while not self.cancelled.wait(0.01):
+                    samples, _ = self.hardware.snapshot()
+                    if all(samples[d.motor_id].received is not None and samples[d.motor_id].received > attempt and
+                           samples[d.motor_id].fault_received is not None and
+                           samples[d.motor_id].fault_received > attempt for d in owned):
+                        break
+                    if time.monotonic() >= retry_deadline:
+                        break
             # Wait for a new enabled sample, keeping the preloaded torque zero.
             deadline = time.monotonic()+self.config.freshness
             while True:
@@ -596,12 +624,15 @@ class SingleMotorHoming:
                     raise ValueError('Homing cancelled')
                 samples, _ = self.hardware.snapshot()
                 selected = samples[self.config.motor_id]
+                now = time.monotonic()
+                # Own motors: a new enabled acknowledgement. Concurrent legs' motors: fresh.
                 if all(samples[d.motor_id].received is not None and
                        samples[d.motor_id].received > enabled_at and samples[d.motor_id].mode == 2 and
                        samples[d.motor_id].fault_received is not None and
                        samples[d.motor_id].fault_received > enabled_at for d in owned) and all(
-                       samples[mid].received is not None and samples[mid].received > enabled_at and
-                       samples[mid].fault_received is not None and samples[mid].fault_received > enabled_at
+                       samples[mid].received is not None and 0 <= now-samples[mid].received < self.config.freshness and
+                       samples[mid].fault_received is not None and
+                       0 <= now-samples[mid].fault_received < self.config.freshness
                        for mid in priority_ids):
                     break
                 if time.monotonic() >= deadline:
@@ -617,14 +648,22 @@ class SingleMotorHoming:
                     with self.hardware.tx_lock:
                         if self.cancelled.is_set():
                             raise ValueError('Homing cancelled')
-                        if time.monotonic()-s.received >= self.config.freshness:
-                            raise ValueError('Feedback expired waiting for CAN lock')
-                        # Zero gains: no hidden impedance torque beyond the cap.
-                        self.send_command(driver, s, torque)
+                        # The sample aged past the freshness limit while queued for the
+                        # shared lock (concurrent legs): send nothing based on it. The
+                        # drive keeps its last command, and checked_sample() on the next
+                        # pass still faults if feedback itself is stale.
+                        expired = time.monotonic()-s.received >= self.config.freshness
+                        if not expired:
+                            # Zero gains: no hidden impedance torque beyond the cap.
+                            self.send_command(driver, s, torque)
+                    if expired:
+                        self.stale_commands_skipped = getattr(self, 'stale_commands_skipped', 0)+1
+                        continue
                     with self.lock:
                         self.reason = self.describe_sequence(sequence)
                 if sequence.done:
                     result = sequence.result()
+                    result['stale_commands_skipped'] = getattr(self, 'stale_commands_skipped', 0)
                     if self.config.motor_id % 10 == 3:
                         result['hip_reference_rad'] = self.knee_hip_reference
                     break
