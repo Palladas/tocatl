@@ -226,9 +226,10 @@ def test_parse_legs():
 
 def test_actuated_legs_from_controller_ids():
     from tocatl_kinematics.player import actuated_legs_from_ids
-    assert actuated_legs_from_ids([12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]) == [1, 2, 3, 4, 5, 6]
-    assert actuated_legs_from_ids([23, 22]) == [2]
-    for bad in ([], [11, 12, 13], [12], [12, 13, 22]):
+    assert actuated_legs_from_ids([12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]) == ([1, 2, 3, 4, 5, 6], [])
+    assert actuated_legs_from_ids([23, 22]) == ([2], [])
+    assert actuated_legs_from_ids([11, 12, 13, 52, 53]) == ([1, 5], [11])  # standing: yaw held, 51 absent
+    for bad in ([], [11], [12], [12, 13, 22]):
         with pytest.raises(ValueError):
             actuated_legs_from_ids(bad)
 
@@ -261,7 +262,7 @@ def test_held_legs_must_sit_inside_the_envelope(session):
 
 @pytest.mark.parametrize('argv,message', [
     (['--legs', '2', '--max-speed-rad-s', '6'], 'max_speed_rad_s'),   # out of range: a clean refusal
-    (['--legs', '2', '--kp', '50'], 'kp must be'),
+    (['--legs', '2', '--kp', '600'], 'kp must be'),   # beyond any profile; per-profile limits are read from the controller
     (['--legs', '4', '--actuated-legs', '1,2'], 'not commanded'),
     (['--legs', '9'], 'Choose legs'),
 ])
@@ -302,3 +303,60 @@ def test_fast_motion_is_timed_to_the_requested_speed(geometry, session):
     assert fast.ok, fast.violations
     assert max(np.abs(v).max() for v in fast.raw_velocity.values()) <= 3.0 * 1.01
     assert fast.times[-1] < 6.0
+
+
+def test_controller_limits_from_parameters():
+    from tocatl_kinematics.player import limits_from_values
+    standing = limits_from_values([[11, 12, 13], 0.5, 100.0, 5.0, 8.0, [-0.3, 0.3], [-0.02, 2.6], [-1.7, 2.0]])
+    assert standing.max_kp == 100.0 and standing.torque_limit == 8.0
+    assert standing.offsets.hip_pitch == (-0.02, 2.6) and standing.offsets.hip_yaw == (-0.3, 0.3)
+    feet_air = limits_from_values([[12, 13], 0.5, 30.0, 2.0, 1.5, [0.0], [-0.02, 1.6], [-1.7, 2.0]])
+    assert feet_air.offsets.hip_yaw == EnvelopeOffsets().hip_yaw  # unset parameter reads as [0.0]
+
+
+def stand_motion(**kw):
+    values = dict(kind='stand', r_m=0.25, rest_height_m=0.10, stand_height_m=0.20, mass_kg=12.0,
+                  max_speed_rad_s=0.3, torque_limit_nm=8.0)
+    values.update(kw)
+    return PlaneMotion(**values)
+
+
+STANDING = EnvelopeOffsets(hip_pitch=(-0.02, 2.6), knee=(-1.7, 2.0))
+
+
+def six_leg_session(joint_map):
+    homes = {12: -0.0269, 13: 1.5795, 22: -2.4607, 23: -0.0696, 32: -0.76, 33: -0.23,
+             42: -1.64, 43: -0.06, 52: -0.85, 53: -0.17, 62: -2.45, 63: -0.89}
+    session = joint_map.with_references(homes, 'test')
+    start = {l: session.raw_to_pitch_knee(l, homes[l * 10 + 2] + 0.005, homes[l * 10 + 3] + 0.1) for l in range(1, 7)}
+    return session, start
+
+
+def test_stand_places_feet_touches_down_rises_and_returns(geometry, joint_map):
+    session, start = six_leg_session(joint_map)
+    t = plan_plane_motion(geometry, session, start, stand_motion(), offsets=STANDING)
+    assert t.ok, t.violations
+    leg = geometry.leg(1)
+    feet = np.array([fk((0.0, *row), leg)[[0, 2]] for row in t.q[1]])
+    loaded_feet = feet[t.loaded]
+    assert loaded_feet[:, 0] == pytest.approx(0.25, abs=1e-9)           # feet stay at r while loaded
+    assert loaded_feet[:, 1].max() == pytest.approx(-0.10, abs=1e-3)    # ground contact at rest height
+    assert loaded_feet[:, 1].min() == pytest.approx(-0.20, abs=1e-9)    # body raised to stand height
+    assert t.q[1][0] == pytest.approx(start[1]) and t.q[1][-1] == pytest.approx(start[1])
+    hip_peak = np.abs(t.torques[12]).max()
+    assert 3.0 < hip_peak < 0.9 * 8.0                                   # ~4.9 Nm for 12 kg on six legs
+    assert np.abs(t.torques[12][~t.loaded]).max() == 0.0
+    assert any('continuous rating' in w for w in t.warnings)
+
+
+def test_stand_refuses_loads_beyond_the_cap_and_missing_mass(geometry, joint_map):
+    session, start = six_leg_session(joint_map)
+    heavy = plan_plane_motion(geometry, session, start, stand_motion(mass_kg=25.0), offsets=STANDING)
+    assert any('over 90% of the 8 Nm cap' in v for v in heavy.violations)
+    two_legs = plan_plane_motion(geometry, session, {1: start[1], 2: start[2]}, stand_motion(), offsets=STANDING)
+    assert any('on 2 legs' in v for v in two_legs.violations)
+    narrow = plan_plane_motion(geometry, session, start, stand_motion(), offsets=EnvelopeOffsets())
+    assert any('controller envelope' in v for v in narrow.violations)  # feet-in-air hip envelope is too small
+    for bad in (dict(mass_kg=0.0), dict(stand_height_m=0.05), dict(clearance_m=0.0)):
+        with pytest.raises(ValueError):
+            stand_motion(**bad).validate()

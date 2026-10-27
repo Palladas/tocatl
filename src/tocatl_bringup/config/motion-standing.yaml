@@ -1,0 +1,33 @@
+# Standing. Load AFTER homing-hip-knee.yaml in the same controller:
+#   --params-file homing-hip-knee.yaml --params-file motion-standing.yaml
+#   -p allow_homing:=true -p allow_hardware_motion:=true
+#   -p actuation_motor_ids:=[...] -p telemetry_motor_ids:=[...] -p homing.legs:=[...]
+# (the operator dashboard builds this for the selected legs, including their yaw motors
+# except disconnected 51). Home every leg, then declare the yaw references
+# (motors/declare_yaw_reference) so yaw is held where it is; commands are accepted only
+# for motors homed or yaw-referenced in this controller session.
+#
+# Authorized by Pranav 2026-10-27 for standing: every drive capped at 8 Nm (2x the
+# CyberGear 4 Nm continuous rating; written and read back before enable, restored after
+# confirmed disable), kp <= 100, speed <= 5 rad/s, target-to-measured step <= 0.5 rad.
+# kd <= 5 is the controller's sanity bound. Feedforward torque is unchanged (0.5 Nm).
+# The 45 C readiness thermal guard still stops motion.
+motor_controller:
+  ros__parameters:
+    allow_hardware_motion: false
+    command_timeout_s: 1.0
+    command_max_age_s: 0.5
+    max_motor_velocity_rad_s: 5.0
+    max_motor_torque_nm: 0.5
+    max_motor_kp: 100.0
+    max_motor_kd: 5.0
+    max_position_step_rad: 0.5
+    motion_torque_limit_nm: 8.0
+    poll_period_s: 0.1
+    # Raw-encoder bounds relative to this session's references (homed stop for hip
+    # pitch/knee, declared pose for yaw). Standing stances need the hip 1.7-2.1 rad off
+    # its folded stop, so the hip allows 2.6 (the 2026-08-25 calibration allowed 3.05).
+    # Knee as in motion-feet-air.yaml. Yaw is only held: +/-0.3 rad around its declared pose.
+    hip_yaw_home_offset_rad: [-0.3, 0.3]
+    hip_pitch_home_offset_rad: [-0.02, 2.6]
+    knee_home_offset_rad: [-1.7, 2.0]

@@ -15,18 +15,23 @@ import numpy as np
 
 from tocatl_kinematics.geometry import RobotGeometry
 from tocatl_kinematics.joint_map import JointMap, motor_ids
-from tocatl_kinematics.leg import KinematicsError, ik
+from tocatl_kinematics.leg import KinematicsError, ik, jacobian
 
-KINDS = ('nudge', 'pose', 'circle')
+KINDS = ('nudge', 'pose', 'circle', 'stand')
+GRAVITY = 9.81
+RATED_TORQUE_NM = 4.0   # CyberGear continuous rating
+CAP_MARGIN = 0.9        # plans may use at most this fraction of the drive torque cap
 CONTROLLER_MAX_SPEED_RAD_S = 5.0  # max_motor_velocity_rad_s in the motion profiles (Pranav, 2026-10-27)
 QUINTIC_PEAK = 1.875  # peak d/dt of the quintic blend, per unit displacement per unit time
 
 
 @dataclass(frozen=True)
 class EnvelopeOffsets:
-    """Raw-encoder bounds relative to each homed position; mirrors motion-feet-air.yaml."""
+    """Raw-encoder bounds relative to each session reference; defaults mirror
+    motion-feet-air.yaml (tocatl_play reads the running controller's actual values)."""
     hip_pitch: tuple[float, float] = (-0.02, 1.6)
     knee: tuple[float, float] = (-1.7, 2.0)
+    hip_yaw: tuple[float, float] = (-0.3, 0.3)
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,15 @@ class PlaneMotion:
     z_m: float = -0.05
     radius_m: float = 0.03
     loops: int = 1
+    # stand: feet go to (r_m, -rest_height_m + clearance_m), touch down at the ground
+    # (-rest_height_m: the mounting plane's height above the ground while the body rests),
+    # the body rises to stand_height_m, holds, lowers and the legs return. Joint torques
+    # under load are estimated from mass_kg shared equally by the moving legs.
+    rest_height_m: float = 0.10
+    stand_height_m: float = 0.20
+    clearance_m: float = 0.03
+    mass_kg: float = 0.0
+    torque_limit_nm: float = 8.0
     hold_s: float = 1.0
     max_speed_rad_s: float = 0.1
     dt_s: float = 0.05
@@ -62,6 +76,15 @@ class PlaneMotion:
             problems.append('circle needs radius 0.005-0.1 m and 1-5 loops')
         if self.branch not in ('knee_down', 'knee_up'):
             problems.append('branch must be knee_down or knee_up')
+        if self.kind == 'stand':
+            if not 0 < self.mass_kg <= 50:
+                problems.append('stand needs the robot mass (mass_kg, 0-50 kg) to check joint torques')
+            if not 0.02 <= self.rest_height_m < self.stand_height_m <= 0.6:
+                problems.append('stand needs 0.02 <= rest_height_m < stand_height_m <= 0.6')
+            if not 0.005 <= self.clearance_m <= 0.1:
+                problems.append('clearance_m must be 0.005-0.1')
+            if not 0 < self.torque_limit_nm <= 12:
+                problems.append('torque_limit_nm must be in (0, 12] (the drive cap of the profile)')
         if problems:
             raise ValueError('; '.join(problems))
 
@@ -75,6 +98,9 @@ class PlaneTrajectory:
     raw: dict          # motor_id -> (n,) raw encoder radians
     raw_velocity: dict  # motor_id -> (n,) raw rad/s
     violations: list
+    loaded: np.ndarray = None   # (n,) True where the feet carry the body (stand)
+    torques: dict = None        # motor_id -> (n,) estimated static load torque, Nm
+    warnings: list = None
 
     @property
     def ok(self):
@@ -88,7 +114,10 @@ class PlaneTrajectory:
                 start_rad=float(values[0]), min_offset_rad=float(values.min() - ref),
                 max_offset_rad=float(values.max() - ref),
                 peak_speed_rad_s=float(np.abs(self.raw_velocity[motor_id]).max()))
-        return dict(ok=self.ok, violations=self.violations, motion=asdict(self.motion), legs=list(self.legs),
+            if self.torques:
+                per_motor[str(motor_id)]['peak_load_torque_nm'] = float(np.abs(self.torques[motor_id]).max())
+        return dict(ok=self.ok, violations=self.violations, warnings=self.warnings or [],
+                    motion=asdict(self.motion), legs=list(self.legs),
                     duration_s=float(self.times[-1]), samples=len(self.times), envelope_offsets=asdict(offsets),
                     motors=per_motor)
 
@@ -123,9 +152,37 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
         return np.array(joint_map.pitch_knee_to_raw(leg, q[0], q[1]))
 
     # Waypoints / paths per leg, as callables of a 0..1 progress, plus their joint path for timing.
-    segments = []  # list of (kind, {leg: path(u) -> (pitch, knee)})
+    segments = []  # list of (kind, {leg: path(u) -> (pitch, knee)}, feet loaded)
+
+    def line(leg, a, b):
+        """Straight foot path (r, z) a -> b in the leg plane, quintic in time."""
+        return lambda u: np.array(plane_ik(geometry, leg, a[0] + _blend(u) * (b[0] - a[0]),
+                                           a[1] + _blend(u) * (b[1] - a[1]), motion.branch))
+    if motion.kind == 'stand':
+        r, ground, up = motion.r_m, -motion.rest_height_m, -motion.stand_height_m
+        above = ground + motion.clearance_m
+        try:
+            placed = {leg: np.array(plane_ik(geometry, leg, r, above, motion.branch)) for leg in legs}
+            for leg in legs:
+                plane_ik(geometry, leg, r, up, motion.branch)
+        except KinematicsError as error:
+            violations.append(f'Unreachable stance: {error}')
+            placed = None
+        if placed is not None:
+            segments += [
+                ('place', {leg: (lambda u, a=start[leg], b=placed[leg]: a + _blend(u) * (b - a)) for leg in legs}, False),
+                ('touch down', {leg: line(leg, (r, above), (r, ground)) for leg in legs}, False),
+                ('rise', {leg: line(leg, (r, ground), (r, up)) for leg in legs}, True),
+                ('hold', {leg: (lambda u, leg=leg: np.array(plane_ik(geometry, leg, r, up, motion.branch)))
+                          for leg in legs}, True),
+                ('lower', {leg: line(leg, (r, up), (r, ground)) for leg in legs}, True),
+                ('lift off', {leg: line(leg, (r, ground), (r, above)) for leg in legs}, False),
+                ('return', {leg: (lambda u, a=placed[leg], b=start[leg]: a + _blend(u) * (b - a)) for leg in legs}, False),
+            ]
     try:
-        if motion.kind == 'nudge':
+        if motion.kind == 'stand':
+            target = None
+        elif motion.kind == 'nudge':
             target = {leg: start[leg] + [motion.d_pitch_rad, motion.d_knee_rad] for leg in legs}
         elif motion.kind == 'pose':
             target = {leg: np.array(plane_ik(geometry, leg, motion.r_m, motion.z_m, motion.branch)) for leg in legs}
@@ -136,7 +193,7 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
         violations.append(f'Unreachable target: {error}')
         target = None
     if target is not None:
-        segments.append(('move', {leg: (lambda u, a=start[leg], b=target[leg]: a + _blend(u) * (b - a)) for leg in legs}))
+        segments.append(('move', {leg: (lambda u, a=start[leg], b=target[leg]: a + _blend(u) * (b - a)) for leg in legs}, False))
         if motion.kind == 'circle':
             def circle(u, leg):
                 angle = 2 * pi * motion.loops * _blend(u)
@@ -145,15 +202,15 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
             try:
                 for leg in legs:
                     circle(0.5, leg)
-                segments.append(('circle', {leg: (lambda u, leg=leg: circle(u, leg)) for leg in legs}))
+                segments.append(('circle', {leg: (lambda u, leg=leg: circle(u, leg)) for leg in legs}, False))
             except KinematicsError as error:
                 violations.append(f'Circle leaves the workspace: {error}')
-        segments.append(('hold', {leg: (lambda u, b=target[leg]: b) for leg in legs}))
+        segments.append(('hold', {leg: (lambda u, b=target[leg]: b) for leg in legs}, False))
         segments.append(('return', {leg: (lambda u, a=target[leg], b=start[leg]: a + _blend(u) * (b - a))
-                                    for leg in legs}))
+                                    for leg in legs}, False))
 
-    times, q_rows = [0.0], {leg: [start[leg]] for leg in legs}
-    for kind, paths in segments:
+    times, q_rows, loaded = [0.0], {leg: [start[leg]] for leg in legs}, [False]
+    for kind, paths, carrying in segments:
         if kind == 'hold':
             duration = motion.hold_s
         else:
@@ -168,6 +225,7 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
         for step in range(1, steps + 1):
             u = step / steps
             times.append(times[-1] + duration / steps)
+            loaded.append(carrying)
             for leg, path in paths.items():
                 q_rows[leg].append(np.asarray(path(u), float))
 
@@ -194,5 +252,24 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
             peak = float(np.abs(raw_velocity[motor_id]).max())
             if peak > CONTROLLER_MAX_SPEED_RAD_S:
                 violations.append(f'motor {motor_id} peaks at {peak:.3f} rad/s > {CONTROLLER_MAX_SPEED_RAD_S}')
+    loaded = np.array(loaded, bool)
+    torques, warnings = {}, []
+    if motion.kind == 'stand' and loaded.any():
+        # Static load only: each moving leg carries an equal share of the robot's weight
+        # as an upward vertical foot force; joint torque = J^T F, motor torque = / ratio.
+        force = np.array([0.0, 0.0, motion.mass_kg * GRAVITY / len(legs)])
+        for leg in legs:
+            hip_id, knee_id = motor_ids(leg)[1:]
+            joint = np.array([jacobian((0.0, row[0], row[1]), geometry.leg(leg)).T @ force if carry else np.zeros(3)
+                              for row, carry in zip(q[leg], loaded)])
+            for motor_id, column in ((hip_id, 1), (knee_id, 2)):
+                torques[motor_id] = joint[:, column] / joint_map.motors[motor_id].ratio
+                peak = float(np.abs(torques[motor_id]).max())
+                if peak > CAP_MARGIN * motion.torque_limit_nm:
+                    violations.append(f'motor {motor_id} needs ~{peak:.1f} Nm to carry {motion.mass_kg:g} kg on '
+                                      f'{len(legs)} legs, over {CAP_MARGIN:.0%} of the {motion.torque_limit_nm:g} Nm cap')
+                elif peak > RATED_TORQUE_NM:
+                    warnings.append(f'motor {motor_id} needs ~{peak:.1f} Nm, above the {RATED_TORQUE_NM:g} Nm '
+                                    f'continuous rating: keep the hold short and watch temperature')
     return PlaneTrajectory(motion=motion, legs=legs, times=times, q=q, raw=raw, raw_velocity=raw_velocity,
-                           violations=violations)
+                           violations=violations, loaded=loaded, torques=torques, warnings=warnings)

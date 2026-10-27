@@ -19,7 +19,7 @@ controller requires before arming anyway). The actuated set comes from
 from __future__ import annotations
 
 import argparse
-from dataclasses import fields
+from dataclasses import dataclass, fields, replace
 import json
 import math
 import sys
@@ -43,16 +43,28 @@ LEAD_FRACTION = 0.8     # of max_position_step_rad, leaving room for feedback ag
 STALL_S = 3.0
 
 
+@dataclass(frozen=True)
+class ControllerLimits:
+    """What the running controller enforces; the defaults are motion-feet-air.yaml's."""
+    actuation_ids: tuple = None
+    max_step: float = 0.1
+    max_kp: float = 30.0
+    max_kd: float = 2.0
+    torque_limit: float = 1.5
+    offsets: EnvelopeOffsets = EnvelopeOffsets()
+
+
 def actuated_legs_from_ids(motor_ids_):
-    """Legs whose hip pitch and knee are both actuated; refuses yaw or half a leg."""
+    """(legs whose hip pitch and knee are both actuated, actuated yaw IDs). Yaw is only
+    held, so it needs its leg's pitch/knee; half a leg is refused."""
     ids = set(motor_ids_)
     legs = sorted({mid // 10 for mid in ids})
-    if not ids or any(mid % 10 == 1 for mid in ids):
-        raise ValueError(f'Controller actuates {sorted(ids)}; this player drives hip pitch and knee only')
+    if not ids:
+        raise ValueError('Controller actuates no motors')
     for leg in legs:
         if not {leg * 10 + 2, leg * 10 + 3} <= ids:
             raise ValueError(f'Controller actuates only part of leg {leg}: {sorted(ids)}')
-    return legs
+    return legs, sorted(mid for mid in ids if mid % 10 == 1)
 
 
 def hold_violations(session_map, raw_start, legs, offsets: EnvelopeOffsets):
@@ -67,8 +79,9 @@ def hold_violations(session_map, raw_start, legs, offsets: EnvelopeOffsets):
     return problems
 
 
-def session_inputs(state: dict, legs, joint_map):
-    """References and measured start pose from a robot_state snapshot; raises if not ready."""
+def session_inputs(state: dict, legs, joint_map, yaw_ids=()):
+    """References and measured start pose from a robot_state snapshot; raises if not ready.
+    Actuated yaw motors (``yaw_ids``) are only held, so only their measured position is read."""
     by_leg = {leg['leg']: leg for leg in state['legs']}
     motors = {m['motor_id']: m for m in state['motors']}
     refs, start, raw_start = {}, {}, {}
@@ -86,6 +99,11 @@ def session_inputs(state: dict, legs, joint_map):
                 raise ValueError(f'Motor {motor_id} feedback is stale, faulted or missing')
             raw_start[motor_id] = m['position']
         start[leg] = session_map.raw_to_pitch_knee(leg, raw_start[hip_id], raw_start[knee_id])
+    for motor_id in yaw_ids:
+        m = motors.get(motor_id)
+        if not m or not m['fresh'] or m['faults'] or m['position'] is None or not math.isfinite(m['position']):
+            raise ValueError(f'Yaw motor {motor_id} feedback is stale, faulted or missing')
+        raw_start[motor_id] = m['position']
     return session_map, start, raw_start
 
 
@@ -224,18 +242,37 @@ def parse_legs(text):
     return legs
 
 
+CONTROLLER_PARAMETERS = ('actuation_motor_ids', 'max_position_step_rad', 'max_motor_kp', 'max_motor_kd',
+                         'motion_torque_limit_nm', 'hip_yaw_home_offset_rad', 'hip_pitch_home_offset_rad',
+                         'knee_home_offset_rad')
+
+
+def limits_from_values(values):
+    """ControllerLimits from parameter values in CONTROLLER_PARAMETERS order."""
+    ids, step, kp, kd, torque, yaw, hip, knee = values
+    defaults = EnvelopeOffsets()
+    pair = lambda v, default: tuple(v) if len(v) == 2 else default  # unset parameters read as [0.0]
+    return ControllerLimits(actuation_ids=tuple(ids), max_step=step, max_kp=kp, max_kd=kd,
+                            torque_limit=torque or None,
+                            offsets=EnvelopeOffsets(hip_pitch=pair(hip, defaults.hip_pitch),
+                                                    knee=pair(knee, defaults.knee), hip_yaw=pair(yaw, defaults.hip_yaw)))
+
+
 def query_controller(node, rclpy, timeout=3.0):
-    """Read motor_controller's actuation_motor_ids and max_position_step_rad."""
+    """Read the limits the running motor_controller enforces."""
     from rclpy.parameter_client import AsyncParameterClient
     client = AsyncParameterClient(node, 'motor_controller')
     if not client.wait_for_services(timeout_sec=timeout):
-        raise ValueError('motor_controller parameters unavailable; pass --actuated-legs')
-    future = client.get_parameters(['actuation_motor_ids', 'max_position_step_rad'])
+        raise ValueError('motor_controller parameters unavailable')
+    future = client.get_parameters(list(CONTROLLER_PARAMETERS))
     rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
     result = future.result()
-    if result is None or len(result.values) != 2:
-        raise ValueError('Could not read motor_controller parameters; pass --actuated-legs')
-    return list(result.values[0].integer_array_value), result.values[1].double_value
+    if result is None or len(result.values) != len(CONTROLLER_PARAMETERS):
+        raise ValueError('Could not read motor_controller parameters')
+    v = result.values
+    return limits_from_values([v[0].integer_array_value, v[1].double_value, v[2].double_value, v[3].double_value,
+                               v[4].double_value, v[5].double_array_value, v[6].double_array_value,
+                               v[7].double_array_value])
 
 
 def lead_for_step(max_step):
@@ -249,9 +286,10 @@ def main(argv=None):
         legs = parse_legs(args.legs)
         actuated = parse_legs(args.actuated_legs) if args.actuated_legs else None
         motion = PlaneMotion(**{f.name: getattr(args, f.name) for f in fields(PlaneMotion)})
-        motion.validate()
-        if not (0 < args.kp <= 30 and 0 <= args.kd <= 2):
-            raise ValueError('kp must be in (0, 30] and kd in [0, 2] (motion-feet-air.yaml limits)')
+        if motion.kind != 'stand':
+            motion.validate()
+        if not (0 < args.kp <= 500 and 0 <= args.kd <= 5):
+            raise ValueError('kp must be in (0, 500] and kd in [0, 5]')
         if actuated is not None and not set(legs) <= set(actuated):
             raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
         geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
@@ -293,26 +331,42 @@ def main(argv=None):
             rclpy.spin_once(node, timeout_sec=0.1)
         if 'msg' not in latest:
             raise ValueError('No robot_state received; is the controller running?')
-        max_step = None
         try:
-            ids, max_step = query_controller(node, rclpy)
+            limits = query_controller(node, rclpy)
         except ValueError as error:
             if actuated is None:
-                raise
-            print(f'Note: {error}; using the conservative {LEAD_RAD} rad lead', flush=True)
-        if actuated is None:
-            actuated = actuated_legs_from_ids(ids)
-        lead = lead_for_step(max_step)
+                raise ValueError(f'{error}; pass --actuated-legs')
+            limits = ControllerLimits()
+            print(f'Note: {error}; using the feet-in-air profile limits', flush=True)
+        yaw_ids = []
+        if limits.actuation_ids:
+            session_legs, yaw_ids = actuated_legs_from_ids(limits.actuation_ids)
+            if actuated is None:
+                actuated = session_legs
+            elif set(actuated) != set(session_legs):
+                raise ValueError(f'--actuated-legs {actuated} does not match the controller session {session_legs}')
         if not set(legs) <= set(actuated):
             raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
+        if args.kp > limits.max_kp or args.kd > limits.max_kd:
+            raise ValueError(f'kp {args.kp:g} / kd {args.kd:g} exceed this profile (kp <= {limits.max_kp:g}, '
+                             f'kd <= {limits.max_kd:g})')
+        if limits.torque_limit:
+            motion = replace(motion, torque_limit_nm=limits.torque_limit)
+        motion.validate()
+        lead = lead_for_step(limits.max_step)
         held = [leg for leg in actuated if leg not in legs]
         state = _state_dict(latest['msg'])
-        session_map, start, raw_start = session_inputs(state, actuated, joint_map)
-        trajectory = plan_plane_motion(geometry, session_map, {leg: start[leg] for leg in legs}, motion)
+        session_map, start, raw_start = session_inputs(state, actuated, joint_map, yaw_ids)
+        trajectory = plan_plane_motion(geometry, session_map, {leg: start[leg] for leg in legs}, motion,
+                                       offsets=limits.offsets)
         hold = {mid: raw_start[mid] for leg in held for mid in motor_ids(leg)[1:]}
-        trajectory.violations += hold_violations(session_map, raw_start, held, EnvelopeOffsets())
-        report = trajectory.summary(EnvelopeOffsets(), session_map)
+        hold.update({mid: raw_start[mid] for mid in yaw_ids})
+        trajectory.violations += hold_violations(session_map, raw_start, held, limits.offsets)
+        report = trajectory.summary(limits.offsets, session_map)
         report['held_legs'] = held
+        report['held_yaw'] = yaw_ids
+        report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
+                                           torque_limit_nm=limits.torque_limit)
         print(json.dumps(report, indent=1), flush=True)
         if not trajectory.ok:
             raise ValueError('Plan rejected: ' + '; '.join(trajectory.violations))
@@ -320,7 +374,7 @@ def main(argv=None):
             print('Dry run: nothing published.', flush=True)
             return 0
         streamer = Streamer(trajectory, args.kp, args.kd, hold=hold, lead=lead)
-        print(f'Target lead {lead:.3f} rad (controller max_position_step_rad {max_step}).', flush=True)
+        print(f'Target lead {lead:.3f} rad (controller max_position_step_rad {limits.max_step}).', flush=True)
         streaming = True
         print(f'Holding legs {actuated} at the measured pose. Arm the motors to start '
               f'({report["duration_s"]:.1f} s motion of legs {legs}'
