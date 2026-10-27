@@ -20,6 +20,10 @@ from tocatl_lowlevel.motor_map import MOTORS, HIP_KNEE_IDS, hip_knee_ids
 ROTOR_TURN_RAD = 2 * math.pi / 7.75
 
 
+# Longest a leg waits for fresh pair feedback before its torque-limit writes.
+PAIR_FEEDBACK_WAIT_S = 2.0
+
+
 class StaleFeedback(ValueError):
     """Feedback too old to act on; before any enable this is retried, never ignored."""
 
@@ -1542,15 +1546,39 @@ class HipKneeHoming:
         original_limits = {}
         deadline = time.monotonic()+self.timeout_s
         try:
-            samples, error = self.hardware.snapshot()
-            now = time.monotonic()
-            for mid in pair:
-                sample = samples[mid]
-                if (error or sample.mode != 0 or sample.received is None or
-                        sample.fault_received is None or sample.faults or sample.state_faults or
-                        not 0 <= now-sample.received < self.hardware.stale_after or
-                        not 0 <= now-sample.fault_received < self.hardware.stale_after):
-                    raise ValueError('Fresh disabled, fault-free pair required before torque-limit writes')
+            # A pair that waited in the background (one motor per priority sweep while the
+            # previous batch homed) can be just past stale_after when its turn starts; with
+            # yaw motors also polled (Level 4) that refused leg 2 on 2026-10-27 16:16. The
+            # batch now polls this pair at full rate, so wait briefly for fresh samples.
+            # Faults or an enabled motor still refuse at once.
+            wait_until = time.monotonic()+PAIR_FEEDBACK_WAIT_S
+            while True:
+                samples, error = self.hardware.snapshot()
+                now = time.monotonic()
+                if error:
+                    raise ValueError(f'CAN transport fault before torque-limit writes: {error}')
+                problems, stale = [], []
+                for mid in pair:
+                    sample = samples[mid]
+                    if sample.mode != 0:
+                        problems.append(f'motor {mid} not disabled (mode {sample.mode})')
+                    if sample.faults or sample.state_faults:
+                        problems.append(f'motor {mid} faults {sorted(set(sample.faults) | set(sample.state_faults))}')
+                    for name, received in (('state', sample.received), ('fault-status', sample.fault_received)):
+                        if received is None:
+                            stale.append(f'motor {mid} {name} feedback missing')
+                        elif not 0 <= now-received < self.hardware.stale_after:
+                            stale.append(f'motor {mid} {name} age {now-received:.2f} s > {self.hardware.stale_after} s')
+                if problems:
+                    raise ValueError('Disabled, fault-free pair required before torque-limit writes: '
+                                     + '; '.join(problems))
+                if not stale:
+                    break
+                if now >= wait_until or self.cancelled.wait(0.02):
+                    if self.cancelled.is_set():
+                        raise ValueError('Leg homing cancelled')
+                    raise StaleFeedback('Fresh pair feedback required before torque-limit writes: '
+                                        + '; '.join(stale))
             for mid in pair:
                 original_limits[mid] = self.hardware.read_runtime_torque_limit(mid)
                 if original_limits[mid] < 1.5:

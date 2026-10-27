@@ -451,3 +451,51 @@ def test_stop_recovery_cancels_opposite_leg_before_ack_recovers(tmp_path, quick_
     assert all(s.mode == 0 and s.runtime_torque_limit == 12 for s in hw.samples.values())
     assert not worker.readiness.snapshot()[0]
 
+
+
+def test_leg_waits_briefly_for_fresh_pair_feedback_instead_of_refusing(tmp_path, quick_contact):
+    """2026-10-27 16:16: leg 2's background-polled feedback was just past stale_after when
+    its batch turn came, and the leg refused instead of waiting one sweep."""
+    hw = FakeHardware()
+    stale_reads = {'left': 3}
+    fresh_snapshot = hw.snapshot
+
+    def snapshot():
+        samples, error = fresh_snapshot()
+        if stale_reads['left'] > 0:
+            stale_reads['left'] -= 1
+            old = time.monotonic() - 1.6
+            samples = {mid: replace(s, received=old, fault_received=old) if mid in (22, 23) else s
+                       for mid, s in samples.items()}
+        return samples, error
+    hw.snapshot = snapshot
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(2,))
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert not worker.faulted, worker.reason
+    assert set(worker.readiness.snapshot()[0]) == {22, 23}
+    assert stale_reads['left'] == 0
+
+
+def test_leg_refuses_with_a_specific_reason(tmp_path, quick_contact):
+    from tocatl_lowlevel.homing import PAIR_FEEDBACK_WAIT_S
+    hw = FakeHardware()
+    hw.samples[23].faults = ('Over current',)
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(2,))
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert worker.faulted and "motor 23 faults ['Over current']" in worker.reason
+    assert not any(action == 'limit' for _, action, _ in hw.events)  # nothing written
+    hw2 = FakeHardware()
+    fresh = hw2.snapshot
+    hw2.snapshot = lambda: ({mid: replace(s, received=time.monotonic() - 2.0) if mid == 22 else s
+                             for mid, s in fresh()[0].items()}, '')
+    worker2 = HipKneeHoming(hw2, tmp_path/'homes2.json', profiles=profiles(), legs=(2,))
+    hw2.owner = worker2
+    started = time.monotonic()
+    worker2.start()
+    worker2.thread.join(5)
+    assert worker2.faulted and 'motor 22 state age' in worker2.reason
+    assert time.monotonic() - started >= PAIR_FEEDBACK_WAIT_S * 0.9  # waited before refusing
