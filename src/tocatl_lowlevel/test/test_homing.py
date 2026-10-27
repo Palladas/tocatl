@@ -603,17 +603,19 @@ def refreshed(samples):
         samples[mid] = replace(samples[mid], received=now, fault_received=now)
 
 
-@pytest.mark.parametrize('change,message', [
-    (dict(fault_received=time.monotonic() - 0.4), r'knee 13 fault-status age \d+\.\d+ s > 0\.25 s'),
-    (dict(received=time.monotonic() - 0.4), r'knee 13 state age \d+\.\d+ s > 0\.25 s'),
-    (dict(fault_received=None), 'knee 13 fault-status feedback missing'),
+@pytest.mark.parametrize('field,age,message', [
+    ('fault_received', 0.4, r'knee 13 fault-status age 0\.4\d* s > 0\.25 s'),
+    ('received', 0.4, r'knee 13 state age 0\.4\d* s > 0\.25 s'),
+    ('fault_received', None, 'knee 13 fault-status feedback missing'),
 ])
-def test_passive_knee_names_the_stale_feedback(change, message):
+def test_passive_knee_names_the_stale_feedback(field, age, message):
     """2026-10-27 15:35, leg 6: the combined message could not say which check tripped."""
     from tocatl_lowlevel.homing import StaleFeedback
     worker, samples = passive_knee_worker()
     refreshed(samples)
-    samples[13] = replace(samples[13], **change)
+    # Ages set at run time: 0.4 s is past the 0.25 s homing freshness but inside the 1.5 s
+    # general staleness, so the passive-knee check is the one that reports.
+    samples[13] = replace(samples[13], **{field: None if age is None else time.monotonic() - age})
     with pytest.raises(StaleFeedback, match=message):
         worker.checked_sample(initial=True)
 
