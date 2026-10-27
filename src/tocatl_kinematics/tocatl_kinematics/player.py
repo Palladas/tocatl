@@ -34,6 +34,12 @@ from tocatl_kinematics.motions import EnvelopeOffsets, PlaneMotion, plan_plane_m
 STATE_STALE_S = 0.5
 ARM_TIMEOUT_S = 120.0
 END_HOLD_S = 2.0
+# The controller rejects a target more than max_position_step_rad (0.1) from the measured
+# position, and 1 s without an accepted command trips its watchdog (a FAULT that clears
+# every leg's homing). So targets never lead the measured position by more than this, and
+# the plan only advances while every moving motor keeps up.
+LEAD_RAD = 0.08
+STALL_S = 3.0
 
 
 def actuated_legs_from_ids(motor_ids_):
@@ -83,7 +89,14 @@ def session_inputs(state: dict, legs, joint_map):
 
 
 class Streamer:
-    """Pure decision logic for what to publish at each tick; the ROS node only feeds it."""
+    """Pure decision logic for what to publish at each tick; the ROS node only feeds it.
+
+    Playback is lag-aware: plan time advances only while every moving motor would stay
+    within LEAD_RAD of its measured position, so a motor that cannot keep up (torque cap,
+    load, bus latency) slows the motion instead of faulting it. Every sent target is
+    clamped to within LEAD_RAD of the measured position. No progress for STALL_S stops
+    the motion with the lagging motor named.
+    """
 
     def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None):
         """``hold``: {motor_id: raw} for actuated motors that are not moving."""
@@ -96,35 +109,86 @@ class Streamer:
         self.started = None
         self.waiting_since = clock()
         self.reason = ''
+        self.progress = 0.0        # plan time reached, s
+        self.last_tick = None
+        self.last_advance = None
+        self.finished_at = None
+        self.max_lag = (None, 0.0)  # (motor_id, rad) seen while playing
 
-    def targets(self, index):
-        return [(mid, float(self.hold[mid]), 0.0) if mid in self.hold else
-                (mid, float(self.trajectory.raw[mid][index]), float(self.trajectory.raw_velocity[mid][index]))
-                for mid in self.motor_ids]
+    def index_at(self, plan_time):
+        return min(int(np.searchsorted(self.trajectory.times, plan_time)), len(self.trajectory.times) - 1)
 
-    def step(self, safety_state, state_age):
-        """Return the targets to publish now, or None to stop publishing (sets reason)."""
+    def planned(self, index):
+        return {mid: (float(self.hold[mid]), 0.0) if mid in self.hold else
+                (float(self.trajectory.raw[mid][index]), float(self.trajectory.raw_velocity[mid][index]))
+                for mid in self.motor_ids}
+
+    def targets(self, index, measured=None, moving=True):
+        """Planned targets at ``index``, clamped to within LEAD_RAD of ``measured``."""
+        out = []
+        for mid, (position, velocity) in self.planned(index).items():
+            actual = (measured or {}).get(mid)
+            if actual is not None:
+                position = min(actual + LEAD_RAD, max(actual - LEAD_RAD, position))
+            out.append((mid, position, velocity if moving else 0.0))
+        return out
+
+    def lag(self, index, measured):
+        """Largest |planned - measured| over moving motors, as (motor_id, rad)."""
+        worst = (None, 0.0)
+        for mid in self.trajectory.raw:
+            actual = measured.get(mid)
+            gap = float('inf') if actual is None else abs(float(self.trajectory.raw[mid][index]) - actual)
+            if gap > worst[1]:
+                worst = (mid, gap)
+        return worst
+
+    def step(self, safety_state, state_age, measured=None):
+        """Return the targets to publish now, or None to stop publishing (sets reason).
+
+        ``measured``: {motor_id: raw position} from fresh feedback (missing = unknown)."""
         now = self.clock()
+        measured = measured or {}
         if state_age is None or state_age > STATE_STALE_S:
             return self.stop('robot_state stale; stopped publishing')
         if self.phase == 'HOLD':
             if safety_state == 'ARMED':
                 self.phase, self.started = 'PLAY', now
+                self.last_tick = self.last_advance = now
             elif safety_state == 'FAULT':
                 return self.stop('Controller FAULT before arming')
             elif now - self.waiting_since > ARM_TIMEOUT_S:
                 return self.stop(f'Not armed within {ARM_TIMEOUT_S:.0f} s')
             else:
-                return self.targets(0)
+                return self.targets(0, measured, moving=False)
         if safety_state != 'ARMED':
             return self.stop(f'Controller left ARMED ({safety_state}) during motion')
-        elapsed = now - self.started
         duration = float(self.trajectory.times[-1])
-        if elapsed >= duration + END_HOLD_S:
+        dt, self.last_tick = now - self.last_tick, now
+        moving = False
+        if self.progress < duration:
+            candidate = min(duration, self.progress + dt)
+            lagging = self.lag(self.index_at(candidate), measured)
+            if lagging[1] <= LEAD_RAD:
+                self.progress, self.last_advance, moving = candidate, now, True
+            if lagging[1] > self.max_lag[1] and lagging[1] != float('inf'):
+                self.max_lag = lagging
+            if now - self.last_advance > STALL_S:
+                held = self.lag(self.index_at(self.progress), measured)
+                return self.stop(f'Motion stalled for {STALL_S:.0f} s at {100 * self.progress / duration:.0f}%: '
+                                 f'motor {lagging[0]} is {lagging[1]:.3f} rad behind its next target '
+                                 f'({held[1]:.3f} rad behind the current one); it cannot follow at this load')
+        elif self.finished_at is None:
+            self.finished_at = now
+        if self.finished_at is not None and now - self.finished_at >= END_HOLD_S:
             self.phase, self.reason = 'DONE', 'Motion complete'
             return None
-        index = int(np.searchsorted(self.trajectory.times, min(elapsed, duration)))
-        return self.targets(min(index, len(self.trajectory.times) - 1))
+        return self.targets(self.index_at(self.progress), measured, moving)
+
+    def status(self):
+        duration = float(self.trajectory.times[-1])
+        return (f'progress {100 * self.progress / duration:.0f}% of {duration:.1f} s plan; '
+                f'max lag so far {self.max_lag[1]:.3f} rad' + (f' (motor {self.max_lag[0]})' if self.max_lag[0] else ''))
 
     def stop(self, reason):
         self.phase, self.reason = 'STOPPED', reason
@@ -243,18 +307,25 @@ def main(argv=None):
         print(f'Holding legs {actuated} at the measured pose. Arm the motors to start '
               f'({report["duration_s"]:.1f} s motion of legs {legs}'
               + (f'; legs {held} keep holding' if held else '') + ').', flush=True)
-        last_phase = streamer.phase
+        last_phase, last_report = streamer.phase, 0.0
         while True:
             tick = time.monotonic()
             rclpy.spin_once(node, timeout_sec=0.0)
             msg = latest.get('msg')
+            measured = ({m.motor_id: m.position_rad for m in msg.motors
+                         if m.telemetry_fresh and math.isfinite(m.position_rad)} if msg else {})
             targets = streamer.step(msg.safety_state if msg else None,
-                                    time.monotonic() - latest['at'] if msg else None)
+                                    time.monotonic() - latest['at'] if msg else None, measured)
             if streamer.phase != last_phase:
                 print(f'Phase {streamer.phase}', flush=True)
                 last_phase = streamer.phase
+            if streamer.phase == 'PLAY' and time.monotonic() - last_report >= 2.0:
+                print(streamer.status(), flush=True)
+                last_report = time.monotonic()
             if targets is None:
                 print(streamer.reason, flush=True)
+                if streamer.started is not None:
+                    print(streamer.status(), flush=True)
                 code = 0 if streamer.phase == 'DONE' else 3
                 if streamer.phase == 'DONE' or msg is not None and msg.safety_state == 'ARMED':
                     disarm()

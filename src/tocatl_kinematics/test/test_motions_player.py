@@ -123,18 +123,34 @@ def streamer(geometry, session):
     return Streamer(trajectory, 30.0, 2.0, clock=clock), clock, trajectory
 
 
+def run(s, clock, seconds, measured, follow=1.0, dt=0.05):
+    """Step at 20 Hz; each motor moves ``follow`` of the way to its last target per tick."""
+    out = None
+    for _ in range(int(round(seconds / dt))):
+        clock.t += dt
+        out = s.step('ARMED', 0.02, dict(measured))
+        if out is None:
+            return None
+        for mid, position, _ in out:
+            measured[mid] += follow.get(mid, 1.0) * (position - measured[mid]) if isinstance(follow, dict) \
+                else follow * (position - measured[mid])
+    return out
+
+
 def test_streamer_holds_until_armed_then_plays_and_finishes(geometry, session):
     s, clock, trajectory = streamer(geometry, session)
-    hold = s.step('DISARMED', 0.02)
+    measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
+    hold = s.step('DISARMED', 0.02, measured)
     assert [t[1] for t in hold] == pytest.approx([trajectory.raw[12][0], trajectory.raw[13][0]])
     clock.t = 5.0
-    assert s.step('DISARMED', 0.02) == hold and s.phase == 'HOLD'
-    assert s.step('ARMED', 0.02) is not None and s.phase == 'PLAY'
-    clock.t += trajectory.times[-1] / 2
-    middle = s.step('ARMED', 0.02)
-    assert middle != hold
-    clock.t += trajectory.times[-1] / 2 + END_HOLD_S + 0.01
-    assert s.step('ARMED', 0.02) is None and s.phase == 'DONE'
+    assert s.step('DISARMED', 0.02, measured) == hold and s.phase == 'HOLD'
+    assert s.step('ARMED', 0.02, measured) is not None and s.phase == 'PLAY'
+    duration = trajectory.times[-1]
+    assert run(s, clock, duration / 2, measured) is not None
+    assert s.progress == pytest.approx(duration / 2, abs=0.11)  # following motors: real-time playback
+    assert run(s, clock, duration / 2 + END_HOLD_S + 0.2, measured) is None
+    assert s.phase == 'DONE' and s.progress == pytest.approx(duration)
+    assert measured[12] == pytest.approx(trajectory.raw[12][-1], abs=1e-3)
 
 
 @pytest.mark.parametrize('safety,age,advance,phase_reason', [
@@ -146,6 +162,52 @@ def test_streamer_stops_before_arming(geometry, session, safety, age, advance, p
     s, clock, _ = streamer(geometry, session)
     clock.t = advance
     assert s.step(safety, age) is None and s.phase == 'STOPPED' and phase_reason in s.reason
+
+
+def test_lagging_motor_slows_the_plan_and_targets_never_lead_by_more_than_the_limit(geometry, session):
+    """2026-10-27 22:26: hip 42 fell >0.1 rad behind, every command was rejected, watchdog FAULT."""
+    from tocatl_kinematics.player import LEAD_RAD
+    clock = Clock()
+    trajectory = plan_plane_motion(geometry, session, start_pose(session, (1,)), PlaneMotion(kind='pose'))
+    s = Streamer(trajectory, 30.0, 2.0, clock=clock)
+    measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
+    s.step('ARMED', 0.02, measured)
+    sent = []
+    for _ in range(400):  # 20 s; the hip covers 2% of each gap per tick (~0.03 rad/s < 0.1 planned)
+        clock.t += 0.05
+        out = s.step('ARMED', 0.02, dict(measured))
+        assert out is not None, s.reason
+        for mid, position, _ in out:
+            sent.append(abs(position - measured[mid]))
+            measured[mid] += (0.02 if mid == 12 else 1.0) * (position - measured[mid])
+    assert max(sent) <= LEAD_RAD + 1e-12
+    assert 1.0 < s.progress < 15.0  # slowed well below real time, but still advancing
+    assert s.max_lag[0] == 12
+
+
+def test_stalled_motor_stops_with_a_named_reason(geometry, session):
+    s, clock, trajectory = streamer(geometry, session)
+    measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
+    s.step('ARMED', 0.02, measured)
+    stuck = dict(measured)
+    for _ in range(int(10.0 / 0.05)):
+        clock.t += 0.05
+        out = s.step('ARMED', 0.02, dict(stuck))  # the hip never moves
+        if out is None:
+            break
+        stuck[13] = dict((m, p) for m, p, _ in out)[13]
+    assert out is None and s.phase == 'STOPPED'
+    assert 'stalled' in s.reason and 'motor 12' in s.reason
+
+
+def test_held_legs_are_clamped_toward_their_measured_pose(geometry, session):
+    from tocatl_kinematics.player import LEAD_RAD
+    clock = Clock()
+    trajectory = plan_plane_motion(geometry, session, {2: start_pose(session)[2]}, PlaneMotion())
+    s = Streamer(trajectory, 30.0, 2.0, clock=clock, hold={12: 0.5, 13: 1.0})
+    out = dict((m, p) for m, p, _ in s.step('DISARMED', 0.02, {12: 0.3, 13: 1.0, 22: trajectory.raw[22][0],
+                                                               23: trajectory.raw[23][0]}))
+    assert out[12] == pytest.approx(0.3 + LEAD_RAD) and out[13] == pytest.approx(1.0)
 
 
 def test_streamer_stops_if_controller_leaves_armed(geometry, session):
@@ -178,11 +240,11 @@ def test_streamer_names_every_actuated_motor_and_holds_the_rest(geometry, sessio
     trajectory = plan_plane_motion(geometry, session, {2: start[2]}, PlaneMotion())
     hold = {12: HOMES[12] + 0.005, 13: HOMES[13] + 0.1}
     s = Streamer(trajectory, 30.0, 2.0, clock=clock, hold=hold)
-    first = s.step('DISARMED', 0.02)
+    measured = {**hold, 22: trajectory.raw[22][0], 23: trajectory.raw[23][0]}
+    first = s.step('DISARMED', 0.02, measured)
     assert [t[0] for t in first] == [12, 13, 22, 23]
-    s.step('ARMED', 0.02)
-    clock.t = trajectory.times[-1] / 2
-    middle = {mid: (pos, vel) for mid, pos, vel in s.step('ARMED', 0.02)}
+    s.step('ARMED', 0.02, measured)
+    middle = {mid: (pos, vel) for mid, pos, vel in run(s, clock, trajectory.times[-1] / 2, measured)}
     assert middle[12] == (pytest.approx(hold[12]), 0.0) and middle[13] == (pytest.approx(hold[13]), 0.0)
     assert middle[22][0] != pytest.approx(trajectory.raw[22][0])
     with pytest.raises(ValueError):

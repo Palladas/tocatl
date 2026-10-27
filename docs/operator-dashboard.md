@@ -112,6 +112,17 @@ homed and READY before a motion runs.
 On 2026-10-27 at 22:16, a leg-2-only motion in a six-leg session had all 2397 commands
 rejected for this reason and never armed. Fixed in the player the same day.
 
+**A motor that can't keep up slows the motion; it doesn't fault it.**
+- The player keeps every target within 0.08 rad of the motor's measured position, inside
+  the controller's 0.1 rad step check, and advances the plan only while every moving motor
+  keeps up.
+- If nothing advances for 3 s, the player stops, names the lagging motor, and disarms. That
+  is a disarm, not a FAULT, so homing is kept.
+- On 2026-10-27 at 22:26, a six-leg pose instead faulted the controller. Hip 42 fell more
+  than 0.1 rad behind, holding the leg against gravity at the 1.5 Nm cap. Every command was
+  then rejected, and the watchdog tripped after 1 s.
+- The player reports progress and the worst lag every 2 s.
+
 **Prefer two legs at a time.**
 - Two-leg sessions work.
 - A six-leg nudge at 22:19 completed, but 9 of its commands were rejected. Legs 5 and 6
