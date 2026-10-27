@@ -299,3 +299,64 @@ def test_latched_motion_fault_clears_readiness_once_so_rehoming_sticks():
     assert update()[1] is True and update()[1] is True  # the same latched fault does not clear it again
     motion.fault_count = 2                            # a genuinely new fault does
     assert update()[1] is False
+
+
+def yaw_setup():
+    from tocatl_lowlevel.homing import LegReadiness
+    now = time.monotonic()
+    samples = {mid: Sample(received=now, fault_received=now, position=0.1 * (mid % 10), velocity=0., torque=0.,
+                           temperature=25., mode=0) for mid in range(11, 64)}
+    hardware = NS(snapshot=lambda: ({mid: Sample(**{**vars(s), 'received': time.monotonic(),
+                                                    'fault_received': time.monotonic()})
+                                     for mid, s in samples.items()}, ''), stale_after=1.5)
+    readiness = LegReadiness()
+    for leg in (1, 2):
+        readiness.complete([dict(motor_id=leg * 10 + j, home_position_rad=0.1 * j, contact_positions_rad=[0.1 * j],
+                                 contact_verified=True, config=dict(contacts_required=1)) for j in (2, 3)])
+    return readiness, hardware, samples
+
+
+def test_declare_yaw_records_positions_and_makes_yaw_commandable():
+    readiness, hardware, samples = yaw_setup()
+    assert readiness.declare_yaw(hardware, [11, 21]) == {11: pytest.approx(0.1), 21: pytest.approx(0.1)}
+    homes, _ = readiness.snapshot()
+    assert homes[11] == pytest.approx(0.1) and homes[12] == pytest.approx(0.2)
+    readiness.require(hardware, [NS(motor_id=11), NS(motor_id=12), NS(motor_id=13)])
+    c = MotorCommands(motor_ids=(11, 12, 13), max_kp=100., max_kd=5.,
+                      home_offsets={'hip_yaw': (-0.3, 0.3), **OFFSETS}, homes=lambda: readiness.snapshot()[0])
+    assert c.envelope(11) == (pytest.approx(-0.2), pytest.approx(0.4))
+
+
+@pytest.mark.parametrize('change,message', [
+    (dict(mode=2), 'motor 11 must be disabled'),
+    (dict(faults=('Over current',)), 'motor 11 reports faults'),
+    (dict(position=float('nan')), 'motor 11 position unavailable'),
+])
+def test_declare_yaw_refuses_unsafe_feedback_and_records_nothing(change, message):
+    readiness, hardware, samples = yaw_setup()
+    for key, value in change.items():
+        setattr(samples[11], key, value)
+    with pytest.raises(ValueError, match=message):
+        readiness.declare_yaw(hardware, [11, 21])
+    assert 11 not in readiness.snapshot()[0] and 21 not in readiness.snapshot()[0]
+
+
+def test_declare_yaw_needs_a_homed_leg_and_yaw_ids():
+    readiness, hardware, samples = yaw_setup()
+    with pytest.raises(ValueError, match='leg 3 is not homed'):
+        readiness.declare_yaw(hardware, [31])
+    with pytest.raises(ValueError, match='yaw motor IDs'):
+        readiness.declare_yaw(hardware, [12])
+    with pytest.raises(ValueError, match='not homed'):
+        readiness.require(hardware, [NS(motor_id=11)])  # yaw not declared yet
+
+
+def test_yaw_reference_is_cleared_with_its_leg_and_on_lost_feedback():
+    readiness, hardware, samples = yaw_setup()
+    readiness.declare_yaw(hardware, [11, 21])
+    readiness.invalidate('Homing started; pair not ready', 1)  # rehoming leg 1
+    homes, _ = readiness.snapshot()
+    assert 11 not in homes and 21 in homes
+    samples[21].faults = ('Over temperature',)
+    readiness.check(hardware)
+    assert 21 not in readiness.snapshot()[0] and 22 not in readiness.snapshot()[0]

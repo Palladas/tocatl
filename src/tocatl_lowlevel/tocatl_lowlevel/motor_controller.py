@@ -35,7 +35,7 @@ class MotorController(Node):
             max_kd=self.declare_parameter('max_motor_kd', 1.0).value,
             max_step=self.declare_parameter('max_position_step_rad', 0.1).value,
             motor_ids=self.declare_parameter('actuation_motor_ids', [m.motor_id for m in MOTORS]).value,
-            home_offsets={joint: bounds for joint in ('hip_pitch', 'knee')
+            home_offsets={joint: bounds for joint in ('hip_yaw', 'hip_pitch', 'knee')
                           if (bounds := self.declare_parameter(f'{joint}_home_offset_rad', [0.0]).value) != [0.0]},
             homes=lambda: self.readiness.snapshot()[0])
         if backend == 'hardware':
@@ -71,6 +71,9 @@ class MotorController(Node):
             elif self.motion.allowed:
                 raise ValueError('Combined homing/actuation requires homing.method=hip_knee')
             self.homing_service = self.create_service(Trigger, 'motors/home', self.home)
+            if hasattr(self.homing, 'readiness'):
+                self.yaw_reference_service = self.create_service(
+                    Trigger, 'motors/declare_yaw_reference', self.declare_yaw_reference)
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
@@ -135,6 +138,25 @@ class MotorController(Node):
             selection = f'leg {leg_id}' if leg_id is not None else 'configured legs'
             self.get_logger().info(f'Homing started for {selection}')
             response.success, response.message = True, 'Homing requested'
+        except ValueError as error:
+            response.success, response.message = False, str(error)
+        return response
+
+    def declare_yaw_reference(self, request, response):
+        """Record the actuated yaw motors' current positions as this session's yaw references."""
+        try:
+            with self.motion.lock:
+                if self.motion.requested or self.motion.armed or self.motion.stop_pending:
+                    raise ValueError('Disarm and confirm stopped motors before declaring yaw references')
+            if self.homing.active:
+                raise ValueError('Wait for homing to finish')
+            yaw_ids = [mid for mid in self.commands.motor_ids if mid % 10 == 1]
+            if not yaw_ids:
+                raise ValueError('No yaw motors are actuated in this session')
+            positions = self.readiness.declare_yaw(self.hardware, yaw_ids)
+            message = 'Yaw references declared: ' + ', '.join(f'{mid} {pos:+.4f}' for mid, pos in sorted(positions.items()))
+            self.get_logger().info(message)
+            response.success, response.message = True, message
         except ValueError as error:
             response.success, response.message = False, str(error)
         return response

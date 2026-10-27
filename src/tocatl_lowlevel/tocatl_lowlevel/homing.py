@@ -1193,11 +1193,15 @@ class LegReadiness:
     """Session-only home references; faults or lost feedback latch unready.
 
     A saved file is an audit record, never permission to actuate after restart.
-    Readiness covers pitch/knee only; yaw has not been commissioned.
+    Pitch/knee readiness comes from homing. Yaw has no homing: an operator may declare
+    the current yaw positions as this session's yaw references (``declare_yaw``) so yaw
+    can be held; that reference follows the same loss/fault rules and is cleared with
+    its leg.
     """
     def __init__(self):
         self.lock = threading.RLock()
         self.homes = {}
+        self.yaw = {}
         self.reason = 'Pitch/knee pair has not completed homing in this session'
         self.reasons = {leg: 'Not homed in this session' for leg in range(1, 7)}
 
@@ -1207,6 +1211,7 @@ class LegReadiness:
             for leg in legs:
                 for mid in hip_knee_ids(leg):
                     self.homes.pop(mid, None)
+                self.yaw.pop(leg * 10 + 1, None)
                 self.reasons[leg] = reason
             self.reason = reason
 
@@ -1238,6 +1243,44 @@ class LegReadiness:
             self.reason = 'Pitch/knee homed; yaw excluded; explicit arming required'
             self.reasons[leg] = self.reason
 
+    def declare_yaw(self, hardware, motor_ids):
+        """Record each yaw motor's current position as its session reference.
+
+        Every yaw must have fresh state and fault feedback, be disabled and fault-free,
+        and belong to a leg whose pitch/knee is homed this session; otherwise nothing is
+        recorded."""
+        ids = sorted(set(motor_ids))
+        if not ids or any(mid % 10 != 1 or not 1 <= mid // 10 <= 6 for mid in ids):
+            raise ValueError(f'Yaw references need yaw motor IDs (x1), got {ids}')
+        samples, error = hardware.snapshot()
+        if error:
+            raise ValueError(f'CAN transport fault: {error}')
+        now = time.monotonic()
+        problems, positions = [], {}
+        with self.lock:
+            for mid in ids:
+                s = samples[mid]
+                if mid // 10 * 10 + 2 not in self.homes:
+                    problems.append(f'leg {mid // 10} is not homed this session')
+                elif s.received is None or not 0 <= now-s.received < hardware.stale_after:
+                    problems.append(f'motor {mid} feedback missing or stale')
+                elif s.fault_received is None or not 0 <= now-s.fault_received < hardware.stale_after:
+                    problems.append(f'motor {mid} fault status missing or stale')
+                elif s.mode != 0:
+                    problems.append(f'motor {mid} must be disabled (mode {s.mode})')
+                elif s.faults or s.state_faults:
+                    problems.append(f'motor {mid} reports faults')
+                elif not math.isfinite(s.position):
+                    problems.append(f'motor {mid} position unavailable')
+                else:
+                    positions[mid] = s.position
+            if problems:
+                raise ValueError('Yaw reference not recorded: ' + '; '.join(problems))
+            self.yaw.update(positions)
+            for mid in positions:
+                self.reasons[mid // 10] = 'Pitch/knee homed; yaw held at its declared reference'
+        return positions
+
     def check(self, hardware):
         with self.lock:
             if not self.homes:
@@ -1248,7 +1291,7 @@ class LegReadiness:
                 return False
             now = time.monotonic()
             for leg in {mid // 10 for mid in self.homes}:
-                for mid in hip_knee_ids(leg):
+                for mid in hip_knee_ids(leg) + ((leg * 10 + 1,) if leg * 10 + 1 in self.yaw else ()):
                     s = samples[mid]
                     if (s.received is None or s.fault_received is None or
                             not 0 <= now-s.received < hardware.stale_after or
@@ -1263,12 +1306,14 @@ class LegReadiness:
 
     def require(self, hardware, targets):
         with self.lock:
-            if not self.check(hardware) or any(t.motor_id not in self.homes for t in targets):
-                raise ValueError('Commanded motors are not homed and ready in this session')
+            if not self.check(hardware) or any(t.motor_id not in self.homes and t.motor_id not in self.yaw
+                                               for t in targets):
+                raise ValueError('Commanded motors are not homed (or yaw-referenced) and ready in this session')
 
     def snapshot(self):
+        """({motor_id: session reference raw}, reason): homed pitch/knee plus declared yaw."""
         with self.lock:
-            return dict(self.homes), self.reason
+            return {**self.homes, **self.yaw}, self.reason
 
 
 class PassiveKneeHipHoming(ActiveKneeHoming):
