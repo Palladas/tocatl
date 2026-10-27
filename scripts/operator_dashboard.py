@@ -33,9 +33,18 @@ OUT_OF_SERVICE = (51,)
 # Legs whose stop references are operator-declared and unloaded only.
 UNVALIDATED_LEGS = (2, 3, 4, 5, 6)
 PROFILES = {
-    'telemetry': dict(label='Level 1 · Read-only telemetry', params=CONFIG / 'hardware.yaml', homing=False),
-    'homing': dict(label='Level 2 · Hip/knee homing', params=CONFIG / 'homing-hip-knee.yaml', homing=True),
+    'telemetry': dict(label='Level 1 · Read-only telemetry', params=[CONFIG / 'hardware.yaml'],
+                      homing=False, motion=False),
+    'homing': dict(label='Level 2 · Hip/knee homing', params=[CONFIG / 'homing-hip-knee.yaml'],
+                   homing=True, motion=False),
+    'motion': dict(label='Level 3 · Feet-in-air motion',
+                   params=[CONFIG / 'homing-hip-knee.yaml', CONFIG / 'motion-feet-air.yaml'],
+                   homing=True, motion=True),
 }
+MOTION_KINDS = ('nudge', 'pose', 'circle')
+# Player flags the dashboard may pass, with their types (planner validates the values).
+MOTION_FIELDS = {'d_pitch_rad': float, 'd_knee_rad': float, 'r_m': float, 'z_m': float, 'radius_m': float,
+                 'loops': int, 'hold_s': float, 'max_speed_rad_s': float}
 # Any of these owning a bus makes starting a controller or resetting a link unsafe.
 ROBOT_PROCESSES = ('motor_controller', 'cybergear_telemetry', 'motor_telemetry', 'hold_capture',
                    'tocatl_diagnostics', 'run_spider_art_cue', 'joint_endpoint_probe', 'leg_auto_zero')
@@ -62,7 +71,9 @@ def controller_command(profile, legs=LEGS, commissioning=False, output_path=None
     """Exact argv for the controller; homing flags are only ever set on the command line."""
     if profile not in PROFILES:
         raise ValueError('Unknown controller profile')
-    args = [sys.executable, str(EXECUTABLE), '--ros-args', '--params-file', str(PROFILES[profile]['params'])]
+    args = [sys.executable, str(EXECUTABLE), '--ros-args']
+    for params in PROFILES[profile]['params']:
+        args += ['--params-file', str(params)]
     if not PROFILES[profile]['homing']:
         return args
     legs = sorted(set(legs))
@@ -72,10 +83,38 @@ def controller_command(profile, legs=LEGS, commissioning=False, output_path=None
         raise ValueError('Commissioning must be true or false')
     if output_path is None:
         raise ValueError('Homing needs a session output path')
-    return args + ['-p', 'allow_homing:=true',
-                   '-p', 'homing.legs:=[' + ','.join(map(str, legs)) + ']',
-                   '-p', f'homing.verify_repeatability:={str(commissioning).lower()}',
-                   '-p', f'homing.output_path:={output_path}']
+    selection = '[' + ','.join(map(str, legs)) + ']'
+    args += ['-p', 'allow_homing:=true',
+             '-p', f'homing.legs:={selection}',
+             '-p', f'homing.verify_repeatability:={str(commissioning).lower()}',
+             '-p', f'homing.output_path:={output_path}']
+    if PROFILES[profile]['motion']:
+        # Only the selected legs' hip pitch/knee are polled and commandable: fewer motors keep
+        # bus sweeps short, which the 0.1 rad position-step check depends on.
+        motors = '[' + ','.join(str(leg * 10 + j) for leg in legs for j in (2, 3)) + ']'
+        args += ['-p', 'allow_hardware_motion:=true',
+                 '-p', f'actuation_motor_ids:={motors}', '-p', f'telemetry_motor_ids:={motors}']
+    return args
+
+
+def player_command(legs, kind, values, dry_run):
+    """Exact argv for tocatl_play (tocatl_kinematics.player)."""
+    if kind not in MOTION_KINDS:
+        raise ValueError(f'Motion must be one of {MOTION_KINDS}')
+    if (not isinstance(legs, list) or not legs or len(set(legs)) != len(legs) or
+            any(type(leg) is not int or leg not in LEGS for leg in legs)):
+        raise ValueError('Choose the legs to move')
+    args = [sys.executable, '-m', 'tocatl_kinematics.player', '--legs', ','.join(map(str, sorted(legs))),
+            '--kind', kind]
+    for name, value in values.items():
+        kind_of = MOTION_FIELDS.get(name)
+        if kind_of is None:
+            raise ValueError(f'Unknown motion setting {name}')
+        if kind_of is int and type(value) is not int or kind_of is float and (
+                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
+            raise ValueError(f'{name} must be a finite number')
+        args += ['--' + name.replace('_', '-'), str(value)]
+    return args + (['--dry-run'] if dry_run else [])
 
 
 def can_links():
@@ -249,6 +288,9 @@ class Dashboard:
         self.busy = ''
         self.recording = None
         self.record_stop = threading.Event()
+        self.player = None
+        self.player_mode = ''
+        self.motion_log = deque(maxlen=300)
 
     def event(self, text):
         stamp = datetime.now().strftime('%H:%M:%S')
@@ -273,7 +315,7 @@ class Dashboard:
         profile = data.get('profile')
         legs = data.get('legs', list(LEGS))
         commissioning = data.get('commissioning', False)
-        output = (self.runs_root / '<session>' / 'hip-knee-homing.json') if profile == 'homing' else None
+        output = (self.runs_root / '<session>' / 'hip-knee-homing.json') if profile in PROFILES and PROFILES[profile]['homing'] else None
         return shlex.join(controller_command(profile, legs, commissioning, output))
 
     def start_controller(self, data):
@@ -282,6 +324,8 @@ class Dashboard:
         if data.get('checklist_confirmed') is not True:
             raise ValueError('Confirm every item of the physical checklist first')
         profile = data.get('profile')
+        if profile in PROFILES and PROFILES[profile]['motion'] and data.get('motion_confirmed') is not True:
+            raise ValueError('Confirm the Level 3 motion conditions first')
         legs, commissioning = data.get('legs', list(LEGS)), data.get('commissioning', False)
         controller_command(profile, legs, commissioning, 'check')  # validate before side effects
         if not EXECUTABLE.is_file():
@@ -348,6 +392,7 @@ class Dashboard:
     def shutdown(self, proc):
         """Cancel/disarm first, then SIGINT so the node disables and restores limits itself."""
         try:
+            self.stop_player()
             try:
                 self.disarm()
             except Exception as error:
@@ -377,8 +422,11 @@ class Dashboard:
     def home(self, data):
         leg = data.get('leg')
         with self.lock:
-            if not self.running() or self.profile != 'homing':
+            if not self.running() or not PROFILES[self.profile]['homing']:
                 raise ValueError('Start the homing controller first')
+            grouping = data.get('grouping')
+            if grouping not in (None, 'tripods') or grouping and leg is not None:
+                raise ValueError('Tripod grouping applies only to homing all selected legs')
             if data.get('homing_confirmed') is not True:
                 raise ValueError('Confirm the homing checklist first')
             if leg is not None and leg not in self.legs:
@@ -389,11 +437,81 @@ class Dashboard:
         state, age = self.bridge.snapshot()
         if state is None or age > STALE_AFTER_S:
             raise ValueError('robot_state is not arriving; check the controller log')
-        name = 'motors/home' if leg is None else f'motors/leg_{leg}/home'
+        name = (f'motors/leg_{leg}/home' if leg is not None else
+                'motors/home_tripods' if grouping == 'tripods' else 'motors/home')
         success, message = self.bridge.call(name, 'trigger')
         self.event(f'{name}: {message}')
         if not success:
             raise ValueError(message)
+
+    def player_running(self):
+        with self.lock:
+            return self.player is not None and self.player.poll() is None
+
+    def motion(self, data, dry_run):
+        """Preview (dry run) or start the feet-in-air player for this Level 3 session."""
+        legs = data.get('legs')
+        argv = player_command(legs, data.get('kind'), data.get('values', {}), dry_run)
+        with self.lock:
+            if not self.running() or not PROFILES[self.profile]['motion']:
+                raise ValueError('Start the Level 3 motion controller first')
+            if any(leg not in self.legs for leg in legs):
+                raise ValueError('Move only legs selected for this controller session')
+            if self.player_running() or self.busy:
+                raise ValueError('A motion or operation is already active')
+            if not dry_run and data.get('motion_confirmed') is not True:
+                raise ValueError('Confirm the motion checklist first')
+        env = dict(os.environ, PYTHONUNBUFFERED='1', RCUTILS_LOGGING_BUFFERED_STREAM='0')
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        log = open(Path(self.run_dir) / f'motion-{stamp}{"-dry-run" if dry_run else ""}.log', 'w')
+        log.write('$ ' + shlex.join(argv) + '\n')
+        proc = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, env=env, start_new_session=True)
+        with self.lock:
+            self.player, self.player_mode = proc, 'preview' if dry_run else 'run'
+            self.motion_log.clear()
+        threading.Thread(target=self.follow_player, args=(proc, log), daemon=True).start()
+        self.event(f'{"Previewing" if dry_run else "Started"} motion {data.get("kind")} on legs {sorted(legs)}')
+
+    def follow_player(self, proc, log):
+        with log:
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                with self.lock:
+                    self.motion_log.append(line.rstrip())
+            code = proc.wait()
+            log.write(f'[exit {code}]\n')
+        self.event(f'Motion player exited with status {code}')
+
+    def arm(self, data):
+        with self.lock:
+            if not self.running() or not PROFILES[self.profile]['motion']:
+                raise ValueError('Start the Level 3 motion controller first')
+            if not self.player_running() or self.player_mode != 'run':
+                raise ValueError('Run a motion first; arming needs its commands streaming')
+            if data.get('arm_confirmed') is not True:
+                raise ValueError('Confirm you are ready to arm')
+        success, message = self.bridge.call('motors/enable', 'setbool', data=True)
+        self.event(f'Arm: {message}')
+        if not success:
+            raise ValueError(message)
+
+    def stop_player(self):
+        """Disarm, then interrupt the player (it also requests a disarm on its way out)."""
+        if self.running():
+            try:
+                self.disarm()
+            except Exception as error:
+                self.event(f'Disarm failed: {error}')
+        with self.lock:
+            proc = self.player
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
     def reset_can(self, data):
         buses = data.get('buses')
@@ -499,6 +617,9 @@ class Dashboard:
                 robot=robot if running else None, robot_age_s=age if running else None,
                 stale_after_s=STALE_AFTER_S, out_of_service=OUT_OF_SERVICE,
                 unvalidated_legs=UNVALIDATED_LEGS, recording=recording, recordings=self.recordings(),
+                motion_profile=bool(self.profile and PROFILES[self.profile]['motion']),
+                player_running=self.player_running(), player_mode=self.player_mode,
+                motion_log=list(self.motion_log), motion_kinds=MOTION_KINDS,
                 record_max_s=RECORD_MAX_S,
                 profiles={k: v['label'] for k, v in PROFILES.items()}))
 
@@ -515,7 +636,10 @@ def serve(dashboard, port):
                'disarm': lambda _: dashboard.disarm(), 'home': dashboard.home,
                'can_reset': dashboard.reset_can, 'can_refresh': lambda _: dashboard.refresh_can(),
                'plan': dashboard.plan, 'record': dashboard.record,
-               'record_stop': lambda _: dashboard.stop_recording()}
+               'record_stop': lambda _: dashboard.stop_recording(),
+               'motion_preview': lambda data: dashboard.motion(data, dry_run=True),
+               'motion_run': lambda data: dashboard.motion(data, dry_run=False),
+               'motion_stop': lambda _: dashboard.stop_player(), 'arm': dashboard.arm}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):

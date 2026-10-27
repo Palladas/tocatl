@@ -153,3 +153,24 @@ The tests cover:
 - Validation of the speed cap, motor 51, limits and reach.
 - The fit routines and the CLIs.
 - The restored legacy geometry tests.
+
+## Running motions on the robot (Level 3, feet in the air)
+
+`tocatl_kinematics.motions` plans nudge, pose and circle motions in each leg's own plane,
+using hip pitch and knee only. Yaw has no session reference, so yaw is never commanded.
+`tocatl_play` (`tocatl_kinematics.player`) does four things:
+1. Reads the session homes and the measured pose from `/robot_state`.
+2. Plans the motion and refuses if anything would break the joint limits, the controller
+   envelope or the speed cap.
+3. Streams `MotorCommand` holds until the operator arms.
+4. Plays the motion, then disarms.
+
+Run it from the operator dashboard's Level 3 panel (see `operator-dashboard.md`). To preview
+without sending anything:
+
+```bash
+ros2 run tocatl_kinematics tocatl_play --legs 1 --kind nudge --dry-run
+```
+
+Durations are set so no motor exceeds `--max-speed-rad-s` (default 0.1). For example,
+moving the foot from the folded stop to (r 0.35, z −0.05) takes about 55 s at 0.1 rad/s.

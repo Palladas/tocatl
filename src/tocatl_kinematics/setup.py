@@ -12,4 +12,5 @@ setup(name=name, version='0.1.0', packages=find_packages(exclude=['test']),
           'leg_model = tocatl_kinematics.leg_model:main',
           'tocatl_ik = tocatl_kinematics.cli:ik_main',
           'tocatl_gait = tocatl_kinematics.cli:gait_main',
-          'tocatl_fit = tocatl_kinematics.cli:fit_main']})
+          'tocatl_fit = tocatl_kinematics.cli:fit_main',
+          'tocatl_play = tocatl_kinematics.player:main']})

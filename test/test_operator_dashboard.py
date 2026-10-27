@@ -59,7 +59,7 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(any('allow_hardware_motion' in a for a in argv))
 
     def test_bad_profile_and_legs_rejected(self):
-        for profile, legs in (('motion', [1]), ('homing', []), ('homing', [0]), ('homing', [7]), ('homing', [True])):
+        for profile, legs in (('walking', [1]), ('homing', []), ('homing', [0]), ('homing', [7]), ('homing', [True])):
             with self.assertRaises(ValueError):
                 d.controller_command(profile, legs, False, 'out.json')
         with self.assertRaises(ValueError):
@@ -67,11 +67,34 @@ class CommandTests(unittest.TestCase):
 
     def test_profiles_exist_and_keep_flags_off(self):
         for profile in d.PROFILES.values():
-            text = profile['params'].read_text()
-            self.assertIn('allow_hardware_motion: false', text)
-            if 'allow_homing' in text:
-                self.assertIn('allow_homing: false', text)
-            self.assertNotIn('51', text.split('telemetry_motor_ids:')[1].split('\n')[0])
+            for params in profile['params']:
+                text = '\n'.join(line for line in params.read_text().splitlines()
+                                  if not line.lstrip().startswith('#'))
+                self.assertIn('allow_hardware_motion: false', text)
+                if 'allow_homing' in text:
+                    self.assertIn('allow_homing: false', text)
+                if 'telemetry_motor_ids:' in text:
+                    self.assertNotIn('51', text.split('telemetry_motor_ids:')[1].split('\n')[0])
+
+    def test_motion_profile_command_scopes_motors_to_selected_legs(self):
+        argv = d.controller_command('motion', [2, 1], False, '/tmp/x/out.json')
+        files = [argv[i + 1] for i, a in enumerate(argv) if a == '--params-file']
+        self.assertEqual(files, [str(d.CONFIG / 'homing-hip-knee.yaml'), str(d.CONFIG / 'motion-feet-air.yaml')])
+        for expected in ('allow_homing:=true', 'allow_hardware_motion:=true', 'homing.legs:=[1,2]',
+                         'actuation_motor_ids:=[12,13,22,23]', 'telemetry_motor_ids:=[12,13,22,23]'):
+            self.assertIn(expected, argv)
+        self.assertFalse(any('allow_hardware_motion' in a for a in d.controller_command('homing', [1], False, 'o')))
+
+    def test_player_command_validates_inputs(self):
+        argv = d.player_command([2, 1], 'pose', {'r_m': 0.35, 'z_m': -0.05, 'loops': 1}, dry_run=True)
+        self.assertEqual(argv[1:7], ['-m', 'tocatl_kinematics.player', '--legs', '1,2', '--kind', 'pose'])
+        self.assertIn('--r-m', argv)
+        self.assertEqual(argv[-1], '--dry-run')
+        for legs, kind, values in (([1], 'walk', {}), ([], 'pose', {}), ([7], 'pose', {}), ([1, 1], 'pose', {}),
+                                   ([1], 'pose', {'kp': 100.0}), ([1], 'pose', {'r_m': float('nan')}),
+                                   ([1], 'circle', {'loops': 1.5}), ([1], 'pose', {'r_m': True})):
+            with self.assertRaises(ValueError):
+                d.player_command(legs, kind, values, dry_run=False)
 
     def test_clean_replaces_nonfinite(self):
         self.assertEqual(d.clean({'a': [float('nan'), 1.0, float('inf')]}), {'a': [None, 1.0, None]})
@@ -225,6 +248,52 @@ class ControllerTests(ControllerBase):
         self.assertEqual(self.bridge.call.call_args.args[:2], ('motors/enable', 'setbool'))
         self.assertEqual(self.bridge.call.call_args.kwargs, {'data': False})
         self.assertEqual(proc.signals, [d.signal.SIGINT])
+
+    def test_tripod_home_calls_tripod_service(self):
+        self.start(legs=[1])
+        self.dash.home(dict(leg=None, grouping='tripods', homing_confirmed=True))
+        self.assertEqual(self.bridge.call.call_args.args[0], 'motors/home_tripods')
+        with self.assertRaises(ValueError):
+            self.dash.home(dict(leg=1, grouping='tripods', homing_confirmed=True))
+        with self.assertRaises(ValueError):
+            self.dash.home(dict(leg=None, grouping='all', homing_confirmed=True))
+
+    def test_level3_needs_motion_confirmation_and_allows_homing(self):
+        with patch.object(d.subprocess, 'Popen') as popen, self.assertRaises(ValueError):
+            self.dash.start_controller(dict(profile='motion', legs=[1], checklist_confirmed=True))
+        popen.assert_not_called()
+        self.start(profile='motion', legs=[1], motion_confirmed=True)
+        self.dash.home(dict(leg=1, homing_confirmed=True))
+        self.assertEqual(self.bridge.call.call_args.args[0], 'motors/leg_1/home')
+
+    def test_motion_and_arm_gating(self):
+        self.start(profile='homing', legs=[1])
+        with self.assertRaises(ValueError):  # not a Level 3 session
+            self.dash.motion(dict(legs=[1], kind='nudge'), dry_run=True)
+        self.dash.proc.send_signal(d.signal.SIGINT)
+        self.start(profile='motion', legs=[1], motion_confirmed=True)
+        with self.assertRaises(ValueError):  # leg outside the session
+            self.dash.motion(dict(legs=[2], kind='nudge'), dry_run=True)
+        with self.assertRaises(ValueError):  # run needs the motion checklist
+            self.dash.motion(dict(legs=[1], kind='nudge'), dry_run=False)
+        with self.assertRaises(ValueError):  # arming needs a streaming player
+            self.dash.arm(dict(arm_confirmed=True))
+        player = FakeProc()
+        with patch.object(d.subprocess, 'Popen', return_value=player) as popen:
+            self.dash.motion(dict(legs=[1], kind='nudge', values={'max_speed_rad_s': 0.05},
+                                  motion_confirmed=True), dry_run=False)
+        self.assertNotIn('--dry-run', popen.call_args.args[0])
+        with self.assertRaises(ValueError):  # one motion at a time
+            self.dash.motion(dict(legs=[1], kind='nudge'), dry_run=True)
+        with self.assertRaises(ValueError):
+            self.dash.arm(dict())
+        self.bridge.call.reset_mock()
+        self.dash.arm(dict(arm_confirmed=True))
+        self.assertEqual(self.bridge.call.call_args.args[:2], ('motors/enable', 'setbool'))
+        self.assertEqual(self.bridge.call.call_args.kwargs, {'data': True})
+        self.dash.stop_player()
+        self.assertEqual(self.bridge.call.call_args.kwargs, {'data': False})
+        self.assertEqual(player.signals, [d.signal.SIGINT])
 
     def test_state_is_strict_json(self):
         self.start(legs=[1])

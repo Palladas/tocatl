@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TOCATL · Operator</title>
 <style>
 :root{color-scheme:dark;--bg:#101619;--panel:#1a2328;--line:#344147;--text:#e8efed;--muted:#a7b6b7;--mint:#a6e6cc;--red:#ffb29f;--amber:#f2cf8a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}
 button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:10px 16px;background:#28353a;color:var(--text)}
 button:hover:not(:disabled){border-color:var(--mint)}button:disabled{opacity:.4;cursor:not-allowed}
 button.primary{background:var(--mint);color:#102b21;font-weight:700;border-color:var(--mint)}button.danger{color:var(--red);border-color:#74574e}
@@ -17,7 +17,7 @@ main{max-width:1400px;margin:auto;padding:24px 4vw 140px}
 .banner{padding:12px 16px;background:#27382f;border:1px solid #42604e;border-radius:9px;margin-bottom:20px}
 .grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:20px}
 .panel{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:12px;margin-bottom:20px}
-.choices{display:grid;grid-template-columns:1fr 1fr;gap:10px}.choice{text-align:left;padding:14px}.choice[aria-pressed=true]{background:#294339;border-color:var(--mint)}.choice span{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-top:6px}
+.choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.choice{text-align:left;padding:14px}.choice[aria-pressed=true]{background:#294339;border-color:var(--mint)}.choice span{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-top:6px}
 .check{display:flex;gap:10px;align-items:flex-start;margin:8px 0;line-height:1.45}.check input{margin-top:4px}
 .legpick{display:flex;gap:8px;flex-wrap:wrap}.legpick label{border:1px solid var(--line);border-radius:8px;padding:6px 12px;display:flex;gap:6px;align-items:center}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
@@ -28,12 +28,12 @@ td:first-child,th:first-child,td.l,th.l{text-align:left}tr.legrow td{color:var(-
 .tablewrap{overflow-x:auto}.dim{color:#6b7a7c}.good{color:var(--mint)}.bad{color:var(--red)}.warn{color:var(--amber)}
 .legs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.leg{border:1px solid var(--line);border-radius:10px;padding:12px}.leg.ready{border-color:#42604e}.leg h3{margin:0 0 6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .leg p{margin:6px 0;font-size:12px;color:var(--muted);min-height:2.6em}.leg button{width:100%}
-.recfields{display:grid;grid-template-columns:2fr 1fr;gap:10px}.recfields label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:13px}.recfields input{background:#0c1113;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px}
+.recfields{display:grid;grid-template-columns:2fr 1fr;gap:10px}.motionfields{grid-template-columns:repeat(2,minmax(0,1fr))}.recfields select{background:#0c1113;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px}.recfields label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:13px}.recfields input{background:#0c1113;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px 10px}
 .stat{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #26313a}.stat strong{text-align:right;word-break:break-word}
 #error{color:var(--red);min-height:1.2em;margin:0 0 12px}
 footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1px solid var(--line);padding:12px 4vw;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;backdrop-filter:blur(12px)}footer p{margin:0;font-size:13px;color:var(--muted)}
-@media(max-width:950px){.grid{grid-template-columns:minmax(0,1fr)}.legs{grid-template-columns:1fr 1fr}}
-@media(max-width:560px){.choices,.legs{grid-template-columns:minmax(0,1fr)}header,main{padding-left:16px;padding-right:16px}footer{padding:10px 16px}.panel{padding:16px}}
+@media(max-width:950px){.grid{grid-template-columns:minmax(0,1fr)}.legs{grid-template-columns:1fr 1fr}.choices{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:560px){.choices,.legs,.motionfields{grid-template-columns:minmax(0,1fr)}header,main{padding-left:16px;padding-right:16px}footer{padding:10px 16px}.panel{padding:16px}}
 </style></head><body>
 <header><div><h1>TOCATL</h1><div class="muted">Operator dashboard · telemetry &amp; homing</div></div>
 <div class="status"><span class="badge" id="connection" role="status">Connecting</span><span class="badge" id="ctlBadge">Controller —</span><span class="badge" id="safetyBadge">Safety —</span></div></header>
@@ -47,11 +47,15 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <div class="choices" id="profiles">
 <button class="choice" data-profile="telemetry" aria-pressed="true"><strong>Level 1 · Read-only telemetry</strong><span>hardware.yaml · polls 17 motors on both buses (51 excluded). No enable, mode change or motion.</span></button>
 <button class="choice" data-profile="homing" aria-pressed="false"><strong>Level 2 · Hip/knee homing</strong><span>homing-hip-knee.yaml + allow_homing. Polls the 12 pitch/knee motors; homing runs only when you press a Home button.</span></button>
+<button class="choice" data-profile="motion" aria-pressed="false"><strong>Level 3 · Feet-in-air motion</strong><span>Homing plus motion for the selected legs: hip pitch and knee only, kp ≤ 30, every drive capped at 1.5 Nm. Nothing moves until you arm.</span></button>
 </div>
 <div id="homingOptions" hidden>
 <h3>Legs in homing.legs</h3><div class="legpick" id="legPick"></div>
 <label class="check"><input type="checkbox" id="commissioning"><span>Commissioning mode: 3 contacts per joint, 0.05 rad/s, strict reference check, 600 s budget. Off is normal mode: 1 contact, 0.2 rad/s, 60 s per leg, reference mismatch is recorded but not rejected.</span></label>
 <small>Results go to a new session folder in ~/tocatl-runs, never to the tracked config/ file.</small>
+<div id="motionOptions" hidden>
+<label class="check"><input type="checkbox" id="motionConfirm"><span><strong class="warn">Level 3:</strong> the robot is supported with every selected foot clear of the floor, the body and the other legs. Yaw motors stay unpowered. Motion starts only after I arm, and the physical disconnect is the stop.</span></label>
+</div>
 </div>
 <h3>Command</h3><div class="cmd" id="command">—</div>
 <h3>Physical checklist</h3>
@@ -72,8 +76,29 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label class="check"><input type="checkbox" id="homeClear"><span>Path to every selected stop is clear, the leg is supported so it meets the stop and not its weight, and I am at the disconnect.</span></label>
 <label class="check" id="unvalidatedRow"><input type="checkbox" id="unvalidated"><span><strong class="warn">Legs 2–6</strong> have only operator-declared <em>unloaded</em> stop references (directions −1). This is a first powered test; I will watch the first contact.</span></label>
 <div class="legs" id="legCards"></div>
-<div class="actions"><button id="homeAll">Home all selected legs</button><button class="danger" id="cancel">Cancel homing</button></div>
+<div class="actions"><button id="homeAll">Home all selected legs (pairs 1+4, 2+5, 3+6)</button><button id="homeTripods">Home all as tripods (1-3-5, then 2-4-6)</button><button class="danger" id="cancel">Cancel homing</button></div>
 <p class="muted" id="homeHint"></p>
+</section>
+
+<section class="panel" id="motionPanel" hidden><div class="eyebrow">Step 3 · Motion</div><h2>Feet-in-air motion</h2>
+<p class="muted">Moves each selected foot in its own leg plane, hip pitch and knee only, starting and ending at the measured pose. Preview plans from the live homes and checks joint limits, the controller envelope and speed; nothing is sent. Run streams hold commands; then Arm starts the motion. Legs must be homed and READY in this session.</p>
+<h3>Legs</h3><div class="legpick" id="motionLegs"></div>
+<div class="recfields motionfields">
+<label>Motion<select id="motionKind"><option value="nudge">Nudge (joint change and back)</option><option value="pose">Pose (foot to r, z and back)</option><option value="circle">Circle (loops around r, z)</option></select></label>
+<label>Max motor speed (rad/s)<input id="mSpeed" type="number" value="0.1" min="0.02" max="0.21" step="0.01"></label>
+<label data-kinds="nudge">Hip pitch change (rad)<input id="mDPitch" type="number" value="-0.2" min="-0.8" max="0.8" step="0.05"></label>
+<label data-kinds="nudge">Knee change (rad)<input id="mDKnee" type="number" value="-0.2" min="-0.8" max="0.8" step="0.05"></label>
+<label data-kinds="pose circle">Foot r from yaw axis (m)<input id="mR" type="number" value="0.35" step="0.01"></label>
+<label data-kinds="pose circle">Foot z from mounting plane (m)<input id="mZ" type="number" value="-0.05" step="0.01"></label>
+<label data-kinds="circle">Circle radius (m)<input id="mRadius" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
+<label data-kinds="circle">Loops<input id="mLoops" type="number" value="1" min="1" max="5" step="1"></label>
+<label>Hold at target (s)<input id="mHold" type="number" value="1" min="0" max="10" step="0.5"></label>
+</div>
+<small>Negative changes move away from the compressed stop (thigh lowers, knee unfolds).</small>
+<label class="check"><input type="checkbox" id="motionClear"><span>The whole path is clear for every selected foot, and I am at the disconnect.</span></label>
+<div class="actions"><button id="motionPreview">Preview plan</button><button id="motionRun">Run motion</button><button class="primary" id="arm">Arm motors</button><button class="danger" id="motionStop">Stop motion</button></div>
+<p class="muted" id="motionStatus"></p>
+<pre id="motionLog" hidden></pre>
 </section>
 
 <section class="panel"><div class="status" style="justify-content:space-between"><div><div class="eyebrow">Live</div><h2>Motor telemetry</h2></div><span class="badge" id="telBadge">No robot_state</span></div>
@@ -134,23 +159,32 @@ function needsAck(leg){return homingSelection(leg).some(l=>(state?.unvalidated_l
 function canOk(){return state&&state.can.length===2&&state.can.every(c=>c.operstate==='UP'&&c.state==='ERROR-ACTIVE'&&c.bitrate===1000000)}
 function robotFresh(){return state?.robot&&state.robot_age_s!==null&&state.robot_age_s<state.stale_after_s}
 function controls(){
- const s=state,blocked=!connected||!s||pending||!!s.busy,run=s?.running,homingRun=run&&s.profile==='homing';
+ const s=state,blocked=!connected||!s||pending||!!s.busy,run=s?.running,homingRun=run&&(s.profile==='homing'||s.profile==='motion');
  for(const b of $('profiles').children)b.disabled=blocked||run;
  for(const i of $('legPick').querySelectorAll('input'))i.disabled=blocked||run;
- $('commissioning').disabled=blocked||run;
+ $('commissioning').disabled=$('motionConfirm').disabled=blocked||run;
  for(const i of $('checklist').querySelectorAll('input'))i.disabled=blocked||run;
- $('start').disabled=blocked||run||s.preview_only||!checklistDone()||(profile==='homing'&&!legs.size);
+ $('start').disabled=blocked||run||s.preview_only||!checklistDone()||(profile!=='telemetry'&&!legs.size)||(profile==='motion'&&!$('motionConfirm').checked);
  $('stopCtl').disabled=$('stopCtl2').disabled=blocked||!run;
  $('cancel').disabled=$('cancel2').disabled=!connected||pending||!run;
  $('startHint').textContent=!s?'':s.preview_only?'Preview-only server.':s.busy?s.busy+'…':run?'Controller running. Stop it before changing profile.':!canOk()?'CAN links are not UP / ERROR-ACTIVE at 1 Mbit/s; the server will refuse to start.':!checklistDone()?'Confirm every checklist item to enable Start.':'Ready to start.';
- $('homingPanel').hidden=!(homingRun||(s&&s.profile==='homing'&&s.results.length));
+ $('homingPanel').hidden=!(homingRun||(s&&s.profile!=='telemetry'&&s.results.length));
  $('unvalidatedRow').hidden=!(s?.legs||[]).some(l=>(s.unvalidated_legs||[]).includes(l));
  const canHome=leg=>!blocked&&homingRun&&robotFresh()&&$('homeClear').checked&&(!needsAck(leg)||$('unvalidated').checked);
  for(const b of $('legCards').querySelectorAll('button'))b.disabled=!canHome(Number(b.dataset.leg));
- $('homeAll').disabled=!canHome(null)||!(s?.legs||[]).length;
+ $('homeAll').disabled=$('homeTripods').disabled=!canHome(null)||!(s?.legs||[]).length;
  $('homeHint').textContent=!homingRun?'Start the Level 2 controller to home.':!robotFresh()?'Waiting for fresh robot_state.':!$('homeClear').checked?'Confirm the homing checklist.':'Only one homing request at a time; the controller rejects repeats while running.';
  for(const b of document.querySelectorAll('[data-reset]'))b.disabled=blocked||run||s.preview_only;
  $('canRefresh').disabled=blocked||s.preview_only;
+ const motionRun=run&&s.motion_profile,player=!!s?.player_running,armed=s?.robot?.safety_state==='ARMED';
+ $('motionPanel').hidden=!motionRun;
+ const mLegs=[...$('motionLegs').querySelectorAll('input:checked')].length;
+ for(const el of $('motionPanel').querySelectorAll('input,select'))el.disabled=blocked||player;
+ $('motionPreview').disabled=blocked||!motionRun||player||!mLegs;
+ $('motionRun').disabled=blocked||!motionRun||player||!mLegs||!$('motionClear').checked;
+ $('arm').disabled=!connected||pending||!player||s.player_mode!=='run'||armed;
+ $('motionStop').disabled=!connected||pending||!(player||armed);
+ $('motionStatus').textContent=!motionRun?'':player&&s.player_mode==='preview'?'Planning…':player&&!armed?'Streaming hold commands. Press Arm motors to start the motion.':player&&armed?'Moving. Stop motion disarms immediately.':!mLegs?'Choose legs to move.':!$('motionClear').checked?'Preview anytime; confirm the path is clear to run.':'Ready: Run motion streams hold commands; nothing moves until you arm.';
  const recActive=!!s?.recording?.active;
  $('record').disabled=blocked||!run||recActive||!/^[A-Za-z0-9_-]{1,60}$/.test($('recLabel').value);
  $('recStop').disabled=!connected||!recActive;
@@ -160,7 +194,7 @@ function buildLegPick(){$('legPick').innerHTML=[1,2,3,4,5,6].map(l=>`<label><inp
 function plan(){clearTimeout(planTimer);planTimer=setTimeout(async()=>{if(state?.running)return;
  try{const r=await fetch('/plan',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify({profile,legs:[...legs],commissioning:$('commissioning').checked})});
   const b=await r.json();$('command').textContent=r.ok?b.result:b.error}catch(e){}},150)}
-function setProfile(p){profile=p;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===p);$('homingOptions').hidden=p!=='homing';plan();controls()}
+function setProfile(p){profile=p;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===p);$('homingOptions').hidden=p==='telemetry';$('motionOptions').hidden=p!=='motion';plan();controls()}
 function renderCan(s){const rows=[['Link','operstate'],['Controller state','state'],['Bitrate','bitrate'],['TX queue','txqlen'],['TX packets','tx_packets'],['TX errors','tx_errors'],['TX dropped','tx_dropped'],['RX packets','rx_packets'],['RX errors','rx_errors'],['Bus errors','bus_errors'],['Restarts','restarts']];
  const by=Object.fromEntries(s.can.map(c=>[c.name,c]));
  $('canBody').innerHTML=s.can.length?rows.map(([label,k])=>`<tr><td>${label}</td>${['can0','can1'].map(b=>{const v=by[b]?.[k];const cls=(k==='operstate'&&v!=='UP')||(k==='state'&&v!=='ERROR-ACTIVE')||(k==='bitrate'&&v!==1000000)?'bad':(k==='operstate'||k==='state')?'good':'';return `<td class="${cls}">${v??'—'}</td>`}).join('')}</tr>`).join(''):'<tr><td colspan="3" class="dim">Not read yet.</td></tr>';
@@ -197,7 +231,7 @@ function render(s){state=s;connected=true;$('connection').textContent='Connected
  $('sAge').textContent=s.running&&s.robot_age_s!==null?fmt(s.robot_age_s,2)+' s':'—';
  $('sRun').textContent=s.run_dir||'—';
  if(s.running&&s.command)$('command').textContent=s.command;
- if(s.running&&s.profile&&s.profile!==profile){profile=s.profile;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===profile);$('homingOptions').hidden=profile!=='homing'}
+ if(s.running&&s.profile&&s.profile!==profile){profile=s.profile;for(const b of $('profiles').children)b.setAttribute('aria-pressed',b.dataset.profile===profile);$('homingOptions').hidden=profile==='telemetry';$('motionOptions').hidden=profile!=='motion'}
  const alerts=[];if(s.robot?.safety_state==='FAULT')alerts.push(['FAULT: '+s.robot.status_reason,'']);
  if(s.running&&!robotFresh())alerts.push(['robot_state not arriving; check the controller log. Use the physical disconnect if motion is uncertain.','']);
  if(s.running&&s.robot&&!s.robot.telemetry_fresh&&s.profile)alerts.push(['Some motor telemetry is stale or missing.','caution']);
@@ -205,7 +239,18 @@ function render(s){state=s;connected=true;$('connection').textContent='Connected
  $('alertBar').hidden=!alerts.length;$('alertBar').className='alertbar'+(alerts.length&&alerts.every(a=>a[1])?' caution':'');$('alertBar').textContent=alerts.map(a=>a[0]).join('  ·  ');
  renderCan(s);renderTelemetry(s);renderLegs(s);renderResults(s);
  const logEl=$('log'),atEnd=logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-20;logEl.textContent=s.logs.join('\n')||'No output yet.';if(atEnd)logEl.scrollTop=logEl.scrollHeight;
- $('events').textContent=s.events.join('\n')||'None.';renderRecording(s);controls()}
+ $('events').textContent=s.events.join('\n')||'None.';renderRecording(s);renderMotion(s);controls()}
+function renderMotion(s){const want=(s.motion_profile?s.legs:[]).join(',');
+ if($('motionLegs').dataset.legs!==want){$('motionLegs').dataset.legs=want;
+  $('motionLegs').innerHTML=(s.motion_profile?s.legs:[]).map(l=>`<label><input type="checkbox" value="${l}">Leg ${l}</label>`).join('');
+  for(const i of $('motionLegs').querySelectorAll('input'))i.onchange=controls}
+ $('motionLog').hidden=!s.motion_log.length;const el=$('motionLog'),atEnd=el.scrollTop+el.clientHeight>=el.scrollHeight-20;
+ el.textContent=s.motion_log.join('\n');if(atEnd)el.scrollTop=el.scrollHeight}
+function motionKind(){const k=$('motionKind').value;for(const l of document.querySelectorAll('[data-kinds]'))l.hidden=!l.dataset.kinds.split(' ').includes(k)}
+function motionPayload(){const k=$('motionKind').value,n=id=>Number($(id).value),v={max_speed_rad_s:n('mSpeed'),hold_s:n('mHold')};
+ if(k==='nudge'){v.d_pitch_rad=n('mDPitch');v.d_knee_rad=n('mDKnee')}else{v.r_m=n('mR');v.z_m=n('mZ')}
+ if(k==='circle'){v.radius_m=n('mRadius');v.loops=Math.round(n('mLoops'))}
+ return {legs:[...$('motionLegs').querySelectorAll('input:checked')].map(i=>Number(i.value)),kind:k,values:v}}
 function renderRecording(s){const r=s.recording;
  $('recStatus').textContent=!r?(s.running?'Ready. Name the recording after what you will move.':'Start a controller to record.'):
   (r.active?'Recording "'+r.label+'" · '+r.samples+' samples · '+Math.max(0,Math.round(r.duration_s-(Date.now()/1000-r.started)))+' s left':'Last: "'+r.label+'" · '+r.samples+' samples'+(r.skipped?' · '+r.skipped+' skipped (stale)':''));
@@ -213,23 +258,29 @@ function renderRecording(s){const r=s.recording;
 async function poll(){try{const r=await fetch('/state',{cache:'no-store'});render(await r.json())}
  catch(e){connected=false;$('connection').textContent='Disconnected';$('connection').className='badge bad';controls()}
  setTimeout(poll,500)}
-async function home(leg){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+' (opposite legs move at the same time: 1+4, 2+5, 3+6)';
+async function home(leg,grouping){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+(grouping==='tripods'?' as tripods (1, 3, 5 together, then 2, 4, 6)':' (opposite legs move at the same time: 1+4, 2+5, 3+6)');
  if(!confirm('Start homing '+label+'? Motors will move toward their stops.'))return;
- await post('/home',{leg:leg||null,homing_confirmed:$('homeClear').checked,unvalidated_confirmed:$('unvalidated').checked}).catch(()=>{});
+ await post('/home',{leg:leg||null,grouping:grouping||null,homing_confirmed:$('homeClear').checked,unvalidated_confirmed:$('unvalidated').checked}).catch(()=>{});
  $('homeClear').checked=false;$('unvalidated').checked=false;controls()}
 for(const b of $('profiles').children)b.onclick=()=>setProfile(b.dataset.profile);
 for(const i of $('checklist').querySelectorAll('input'))i.onchange=controls;
 $('commissioning').onchange=plan;$('homeClear').onchange=$('unvalidated').onchange=controls;
-$('start').onclick=async()=>{try{await post('/start',{profile,legs:[...legs],commissioning:$('commissioning').checked,checklist_confirmed:checklistDone()});for(const i of $('checklist').querySelectorAll('input'))i.checked=false}catch(e){}};
+$('start').onclick=async()=>{try{await post('/start',{profile,legs:[...legs],commissioning:$('commissioning').checked,checklist_confirmed:checklistDone(),motion_confirmed:$('motionConfirm').checked});for(const i of $('checklist').querySelectorAll('input'))i.checked=false;$('motionConfirm').checked=false}catch(e){}};
 const stop=()=>{if(confirm('Stop the controller? Homing is cancelled first, then the node is interrupted.'))post('/stop').catch(()=>{})};
 $('stopCtl').onclick=$('stopCtl2').onclick=stop;
 $('cancel').onclick=$('cancel2').onclick=()=>post('/disarm').catch(()=>{});
 $('homeAll').onclick=()=>home(null);
+$('homeTripods').onclick=()=>home(null,'tripods');
+$('motionKind').onchange=motionKind;$('motionClear').onchange=controls;
+$('motionPreview').onclick=()=>post('/motion_preview',motionPayload()).catch(()=>{});
+$('motionRun').onclick=async()=>{try{await post('/motion_run',{...motionPayload(),motion_confirmed:$('motionClear').checked});$('motionClear').checked=false;controls()}catch(e){}};
+$('arm').onclick=()=>{if(confirm('Arm the selected legs? The motion starts immediately; drives are capped at 1.5 Nm.'))post('/arm',{arm_confirmed:true}).catch(()=>{})};
+$('motionStop').onclick=()=>post('/motion_stop').catch(()=>{});
 $('record').onclick=()=>post('/record',{label:$('recLabel').value,duration_s:Number($('recDuration').value)}).catch(()=>{});
 $('recStop').onclick=()=>post('/record_stop').catch(()=>{});
 $('recLabel').oninput=controls;
 $('canRefresh').onclick=()=>post('/can_refresh').catch(()=>{});
 for(const b of document.querySelectorAll('[data-reset]'))b.onclick=()=>{const buses=b.dataset.reset==='both'?['can0','can1']:[b.dataset.reset];
  if(confirm('Bring '+buses.join(' and ')+' down and up at 1 Mbit/s?'))post('/can_reset',{buses}).catch(()=>{})};
-buildLegPick();setProfile('telemetry');poll();
+buildLegPick();setProfile('telemetry');motionKind();poll();
 </script></body></html>

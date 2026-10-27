@@ -78,6 +78,23 @@ class JointMap:
             raw[2] - self._ref(knee_id) - knee.coupling_raw_per_hip_rad * hip_delta) / knee.ratio
         return q_yaw, hip.q_at_reference_rad + hip_delta, q_knee
 
+    def pitch_knee_to_raw(self, leg: int, pitch: float, knee: float) -> tuple[float, float]:
+        """Hip pitch / knee only, for motion with yaw unpowered (no yaw reference needed)."""
+        _, hip_id, knee_id = motor_ids(leg)
+        hip, kn = self.motors[hip_id], self.motors[knee_id]
+        hip_delta = pitch - hip.q_at_reference_rad
+        return (self._ref(hip_id) + hip.sign * hip.ratio * hip_delta,
+                self._ref(knee_id) + kn.sign * kn.ratio * (knee - kn.q_at_reference_rad)
+                + kn.coupling_raw_per_hip_rad * hip_delta)
+
+    def raw_to_pitch_knee(self, leg: int, raw_hip: float, raw_knee: float) -> tuple[float, float]:
+        _, hip_id, knee_id = motor_ids(leg)
+        hip, kn = self.motors[hip_id], self.motors[knee_id]
+        hip_delta = hip.sign * (raw_hip - self._ref(hip_id)) / hip.ratio
+        return (hip.q_at_reference_rad + hip_delta,
+                kn.q_at_reference_rad + kn.sign * (raw_knee - self._ref(knee_id)
+                                                   - kn.coupling_raw_per_hip_rad * hip_delta) / kn.ratio)
+
     def velocity_to_raw(self, leg: int, qd) -> tuple[float, float, float]:
         yaw, hip, knee = (self.motors[i] for i in motor_ids(leg))
         return (yaw.sign * yaw.ratio * qd[0], hip.sign * hip.ratio * qd[1],
