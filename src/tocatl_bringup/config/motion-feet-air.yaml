@@ -8,17 +8,18 @@
 #
 # Gains/torque authorized by Pranav 2026-10-26 for this profile only: kp <= 30, kd <= 2,
 # with every drive capped at 1.5 Nm (written and read back before enable, restored
-# after confirmed disable). Feedforward torque, speed and step limits are unchanged.
+# after confirmed disable). Speed raised to 5 rad/s and the target-to-measured step to
+# 0.5 rad by Pranav 2026-10-27. Feedforward torque is unchanged.
 motor_controller:
   ros__parameters:
     allow_hardware_motion: false
     command_timeout_s: 1.0
     command_max_age_s: 0.5
-    max_motor_velocity_rad_s: 0.21
+    max_motor_velocity_rad_s: 5.0
     max_motor_torque_nm: 0.5
     max_motor_kp: 30.0
     max_motor_kd: 2.0
-    max_position_step_rad: 0.1
+    max_position_step_rad: 0.5
     motion_torque_limit_nm: 1.5
     poll_period_s: 0.1
     # Raw-encoder bounds relative to each motor's homed (compressed-stop) position this

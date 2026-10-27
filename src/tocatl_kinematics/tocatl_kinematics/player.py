@@ -38,7 +38,8 @@ END_HOLD_S = 2.0
 # position, and 1 s without an accepted command trips its watchdog (a FAULT that clears
 # every leg's homing). So targets never lead the measured position by more than this, and
 # the plan only advances while every moving motor keeps up.
-LEAD_RAD = 0.08
+LEAD_RAD = 0.08         # used when the controller's max_position_step_rad can't be read
+LEAD_FRACTION = 0.8     # of max_position_step_rad, leaving room for feedback age
 STALL_S = 3.0
 
 
@@ -98,9 +99,12 @@ class Streamer:
     the motion with the lagging motor named.
     """
 
-    def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None):
-        """``hold``: {motor_id: raw} for actuated motors that are not moving."""
-        self.trajectory, self.kp, self.kd, self.clock = trajectory, kp, kd, clock
+    def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None, lead=LEAD_RAD):
+        """``hold``: {motor_id: raw} for actuated motors that are not moving. ``lead``: how far a
+        target may lead the measured position (below the controller's max_position_step_rad)."""
+        if not 0 < lead <= 1.0:
+            raise ValueError('lead must be in (0, 1] rad')
+        self.trajectory, self.kp, self.kd, self.clock, self.lead = trajectory, kp, kd, clock, lead
         self.hold = dict(hold or {})
         if set(self.hold) & set(trajectory.raw):
             raise ValueError('A motor cannot both move and hold')
@@ -129,7 +133,7 @@ class Streamer:
         for mid, (position, velocity) in self.planned(index).items():
             actual = (measured or {}).get(mid)
             if actual is not None:
-                position = min(actual + LEAD_RAD, max(actual - LEAD_RAD, position))
+                position = min(actual + self.lead, max(actual - self.lead, position))
             out.append((mid, position, velocity if moving else 0.0))
         return out
 
@@ -169,7 +173,7 @@ class Streamer:
         if self.progress < duration:
             candidate = min(duration, self.progress + dt)
             lagging = self.lag(self.index_at(candidate), measured)
-            if lagging[1] <= LEAD_RAD:
+            if lagging[1] <= self.lead:
                 self.progress, self.last_advance, moving = candidate, now, True
             if lagging[1] > self.max_lag[1] and lagging[1] != float('inf'):
                 self.max_lag = lagging
@@ -220,18 +224,23 @@ def parse_legs(text):
     return legs
 
 
-def query_actuation_ids(node, rclpy, timeout=3.0):
-    """Read motor_controller's actuation_motor_ids parameter."""
+def query_controller(node, rclpy, timeout=3.0):
+    """Read motor_controller's actuation_motor_ids and max_position_step_rad."""
     from rclpy.parameter_client import AsyncParameterClient
     client = AsyncParameterClient(node, 'motor_controller')
     if not client.wait_for_services(timeout_sec=timeout):
         raise ValueError('motor_controller parameters unavailable; pass --actuated-legs')
-    future = client.get_parameters(['actuation_motor_ids'])
+    future = client.get_parameters(['actuation_motor_ids', 'max_position_step_rad'])
     rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
     result = future.result()
-    if result is None or not result.values:
-        raise ValueError('Could not read actuation_motor_ids; pass --actuated-legs')
-    return list(result.values[0].integer_array_value)
+    if result is None or len(result.values) != 2:
+        raise ValueError('Could not read motor_controller parameters; pass --actuated-legs')
+    return list(result.values[0].integer_array_value), result.values[1].double_value
+
+
+def lead_for_step(max_step):
+    """Target lead for a controller step limit; the conservative default if unknown."""
+    return LEAD_FRACTION * max_step if max_step and 0 < max_step <= 1.0 else LEAD_RAD
 
 
 def main(argv=None):
@@ -284,8 +293,16 @@ def main(argv=None):
             rclpy.spin_once(node, timeout_sec=0.1)
         if 'msg' not in latest:
             raise ValueError('No robot_state received; is the controller running?')
+        max_step = None
+        try:
+            ids, max_step = query_controller(node, rclpy)
+        except ValueError as error:
+            if actuated is None:
+                raise
+            print(f'Note: {error}; using the conservative {LEAD_RAD} rad lead', flush=True)
         if actuated is None:
-            actuated = actuated_legs_from_ids(query_actuation_ids(node, rclpy))
+            actuated = actuated_legs_from_ids(ids)
+        lead = lead_for_step(max_step)
         if not set(legs) <= set(actuated):
             raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
         held = [leg for leg in actuated if leg not in legs]
@@ -302,7 +319,8 @@ def main(argv=None):
         if args.dry_run:
             print('Dry run: nothing published.', flush=True)
             return 0
-        streamer = Streamer(trajectory, args.kp, args.kd, hold=hold)
+        streamer = Streamer(trajectory, args.kp, args.kd, hold=hold, lead=lead)
+        print(f'Target lead {lead:.3f} rad (controller max_position_step_rad {max_step}).', flush=True)
         streaming = True
         print(f'Holding legs {actuated} at the measured pose. Arm the motors to start '
               f'({report["duration_s"]:.1f} s motion of legs {legs}'

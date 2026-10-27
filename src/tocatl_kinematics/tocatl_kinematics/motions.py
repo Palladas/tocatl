@@ -18,7 +18,7 @@ from tocatl_kinematics.joint_map import JointMap, motor_ids
 from tocatl_kinematics.leg import KinematicsError, ik
 
 KINDS = ('nudge', 'pose', 'circle')
-CONTROLLER_MAX_SPEED_RAD_S = 0.21  # max_motor_velocity_rad_s in motion-feet-air.yaml
+CONTROLLER_MAX_SPEED_RAD_S = 5.0  # max_motor_velocity_rad_s in the motion profiles (Pranav, 2026-10-27)
 QUINTIC_PEAK = 1.875  # peak d/dt of the quintic blend, per unit displacement per unit time
 
 

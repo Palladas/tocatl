@@ -84,7 +84,7 @@ def test_violations_reported_not_sent(geometry, session):
     assert any('motor 12 leaves the controller envelope' in v for v in tight.violations)
 
 
-@pytest.mark.parametrize('bad', [dict(kind='walk'), dict(max_speed_rad_s=0.3), dict(max_speed_rad_s=0),
+@pytest.mark.parametrize('bad', [dict(kind='walk'), dict(max_speed_rad_s=5.5), dict(max_speed_rad_s=0),
                                  dict(d_pitch_rad=1.0), dict(kind='circle', loops=0), dict(branch='x')])
 def test_motion_parameters_validated(geometry, session, bad):
     with pytest.raises(ValueError):
@@ -260,7 +260,7 @@ def test_held_legs_must_sit_inside_the_envelope(session):
 
 
 @pytest.mark.parametrize('argv,message', [
-    (['--legs', '2', '--max-speed-rad-s', '0.4'], 'max_speed_rad_s'),   # 22:16 dry run crashed instead
+    (['--legs', '2', '--max-speed-rad-s', '6'], 'max_speed_rad_s'),   # out of range: a clean refusal
     (['--legs', '2', '--kp', '50'], 'kp must be'),
     (['--legs', '4', '--actuated-legs', '1,2'], 'not commanded'),
     (['--legs', '9'], 'Choose legs'),
@@ -270,3 +270,35 @@ def test_bad_inputs_refuse_cleanly_before_ros(argv, message, capsys):
     assert main(argv) == 2
     out = capsys.readouterr().out
     assert out.startswith('Refused:') and message in out
+
+
+def test_lead_follows_the_controller_step_limit(geometry, session):
+    from tocatl_kinematics.player import LEAD_RAD, lead_for_step
+    assert lead_for_step(0.5) == pytest.approx(0.4)
+    assert lead_for_step(0.1) == pytest.approx(0.08)
+    assert lead_for_step(None) == LEAD_RAD and lead_for_step(5.0) == LEAD_RAD
+    clock = Clock()
+    trajectory = plan_plane_motion(geometry, session, start_pose(session, (1,)),
+                                   PlaneMotion(kind='pose', max_speed_rad_s=3.0))
+    s = Streamer(trajectory, 30.0, 2.0, clock=clock, lead=0.4)
+    measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
+    s.step('ARMED', 0.02, measured)
+    sent = []
+    for _ in range(200):
+        clock.t += 0.05
+        out = s.step('ARMED', 0.02, dict(measured))
+        if out is None:
+            break
+        for mid, position, _ in out:
+            sent.append(abs(position - measured[mid]))
+            measured[mid] += 0.3 * (position - measured[mid])
+    assert max(sent) <= 0.4 + 1e-12 and max(sent) > 0.08  # uses the wider lead, never beyond it
+    with pytest.raises(ValueError):
+        Streamer(trajectory, 30.0, 2.0, lead=0.0)
+
+
+def test_fast_motion_is_timed_to_the_requested_speed(geometry, session):
+    fast = plan_plane_motion(geometry, session, start_pose(session), PlaneMotion(kind='pose', max_speed_rad_s=3.0))
+    assert fast.ok, fast.violations
+    assert max(np.abs(v).max() for v in fast.raw_velocity.values()) <= 3.0 * 1.01
+    assert fast.times[-1] < 6.0
