@@ -48,14 +48,14 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <button class="choice" data-profile="telemetry" aria-pressed="true"><strong>Level 1 · Read-only telemetry</strong><span>hardware.yaml · polls all 18 motors on both buses. No enable, mode change or motion.</span></button>
 <button class="choice" data-profile="homing" aria-pressed="false"><strong>Level 2 · Hip/knee homing</strong><span>homing-hip-knee.yaml + allow_homing. Polls the 12 pitch/knee motors; homing runs only when you press a Home button.</span></button>
 <button class="choice" data-profile="motion" aria-pressed="false"><strong>Level 3 · Feet-in-air motion</strong><span>Homing plus motion for the selected legs: hip pitch and knee only, kp ≤ 30, every drive capped at 1.5 Nm, up to 5 rad/s. Nothing moves until you arm.</span></button>
-<button class="choice" data-profile="standing" aria-pressed="false"><strong>Level 4 · Standing</strong><span>Homing plus motion with yaw held at a declared pose: kp ≤ 100, every drive capped at 8 Nm (2× rated). All six hip yaws are held, including 51.</span></button>
+<button class="choice" data-profile="standing" aria-pressed="false"><strong>Level 4 · Standing</strong><span>Homing plus motion with yaw held at a declared pose: kp ≤ 100, every drive capped at 12 Nm (the motor peak, 3× rated). All six hip yaws are held, including 51.</span></button>
 </div>
 <div id="homingOptions" hidden>
 <h3>Legs in homing.legs</h3><div class="legpick" id="legPick"></div>
 <label class="check"><input type="checkbox" id="commissioning"><span>Commissioning mode: 3 contacts per joint, 0.05 rad/s, strict reference check, 600 s budget. Off is normal mode: 1 contact, 0.2 rad/s, 60 s per leg, reference mismatch is recorded but not rejected.</span></label>
 <small>Results go to a new session folder in ~/tocatl-runs, never to the tracked config/ file.</small>
 <div id="standingOptions" hidden>
-<label class="check"><input type="checkbox" id="standingConfirm"><span><strong class="warn">Level 4:</strong> the robot rests on flat, clear ground with nothing under the body or legs; a person is spotting and the disconnect is in reach. Drives may reach 8 Nm, twice their rating: keep holds short and watch temperature.</span></label>
+<label class="check"><input type="checkbox" id="standingConfirm"><span><strong class="warn">Level 4:</strong> the robot rests on flat, clear ground with nothing under the body or legs; a person is spotting and the disconnect is in reach. Drives may reach 12 Nm, their peak and 3× their rating: keep holds short and watch temperature.</span></label>
 </div>
 <div id="motionOptions" hidden>
 <label class="check"><input type="checkbox" id="motionConfirm"><span><strong class="warn">Level 3:</strong> the robot is supported with every selected foot clear of the floor, the body and the other legs. Yaw motors stay unpowered. Motion starts only after I arm, and the physical disconnect is the stop.</span></label>
@@ -98,7 +98,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label data-kinds="stand">Resting height (m)<input id="mRest" type="number" value="0.10" min="0.02" max="0.6" step="0.01"><small>Mounting plane above the ground while the body rests.</small></label>
 <label data-kinds="stand">Standing height (m)<input id="mStand" type="number" value="0.20" min="0.03" max="0.6" step="0.01"></label>
 <label data-kinds="stand">Foot clearance (m)<input id="mClear" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
-<label data-kinds="stand">Robot mass (kg)<input id="mMass" type="number" value="" min="1" max="50" step="0.5" placeholder="weigh it"><small>Used to check every joint's load torque against the cap.</small></label>
+<label data-kinds="stand">Robot mass (kg)<input id="mMass" type="number" value="16" min="1" max="50" step="0.5"><small>~16 kg (Pranav, 2026-10-27). Used to check every joint's load torque against the cap.</small></label>
 <label data-kinds="pose circle">Foot z from mounting plane (m)<input id="mZ" type="number" value="-0.05" step="0.01"></label>
 <label data-kinds="circle">Circle radius (m)<input id="mRadius" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
 <label data-kinds="circle">Loops<input id="mLoops" type="number" value="1" min="1" max="5" step="1"></label>
@@ -293,7 +293,7 @@ $('homeAll').onclick=()=>home(null);
 $('motionKind').onchange=motionKind;$('motionClear').onchange=controls;
 $('motionPreview').onclick=()=>post('/motion_preview',motionPayload()).catch(()=>{});
 $('motionRun').onclick=async()=>{try{await post('/motion_run',{...motionPayload(),motion_confirmed:$('motionClear').checked});$('motionClear').checked=false;controls()}catch(e){}};
-$('arm').onclick=()=>{const cap=state?.yaw_profile?'8 Nm':'1.5 Nm';if(confirm('Arm? The motion starts immediately; drives are capped at '+cap+'.'))post('/arm',{arm_confirmed:true}).catch(()=>{})};
+$('arm').onclick=()=>{const cap=state?.yaw_profile?'12 Nm':'1.5 Nm';if(confirm('Arm? The motion starts immediately; drives are capped at '+cap+'.'))post('/arm',{arm_confirmed:true}).catch(()=>{})};
 $('motionStop').onclick=()=>post('/motion_stop').catch(()=>{});
 $('record').onclick=()=>post('/record',{label:$('recLabel').value,duration_s:Number($('recDuration').value)}).catch(()=>{});
 $('recStop').onclick=()=>post('/record_stop').catch(()=>{});

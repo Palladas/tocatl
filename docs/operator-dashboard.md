@@ -141,8 +141,9 @@ Not yet run on the robot. Start with one leg, a nudge, and 0.05–0.1 rad/s.
 
 The Level 4 profile loads `homing-hip-knee.yaml` and then `motion-standing.yaml`. Pranav
 authorized these limits on 2026-10-27:
-- Every drive is capped at **8 Nm**, twice the CyberGear's 4 Nm continuous rating. The cap is
-  written and read back before enable, and restored after a confirmed disable.
+- Every drive is capped at **12 Nm**, the CyberGear's peak and 3× its 4 Nm continuous rating
+  (raised from 8 Nm on 2026-10-27). The cap is written and read back before enable, and
+  restored after a confirmed disable.
 - kp ≤ 100, kd ≤ 5, speed ≤ 5 rad/s, each target within 0.5 rad of the measured position.
 - Feedforward torque is unchanged at 0.5 Nm. The 45 °C readiness guard still stops motion.
 
@@ -166,12 +167,13 @@ yet; if can1 stalls, stop, reset can1 and see `docs/motor51-diagnosis-2026-10-26
    - **Resting height:** the mounting plane's height above the ground while the body rests.
    - **Standing height.**
    - **Clearance.**
-   - **The robot's mass,** which you get by weighing it.
+   - **The robot's mass:** about 16 kg (the dashboard's default).
 
    Use kp around 80 and kd around 4.
 5. **Preview.** The plan is refused if any joint's static load torque (mass shared equally by
-   the moving legs) exceeds 90% of the 8 Nm cap. It warns above the 4 Nm rating.
-   - Example: 12 kg on six legs at r 0.25 m needs about 4.9 Nm per hip and 1 Nm per knee.
+   the moving legs) exceeds 90% of the 12 Nm cap. It warns above the 4 Nm rating.
+   - At 16 kg on six legs, the hip needs about 5.2 Nm at r 0.20 m, 6.5 Nm at 0.25 m, 7.8 Nm
+     at 0.30 m and 9.2 Nm at 0.35 m. The knee needs 0.7–2.9 Nm.
    - Moving the feet in (smaller r) lowers hip torque and raises knee torque.
 6. **Run motion**, then **Arm**. The sequence: place the feet, touch down, rise, hold, lower,
    lift off, return.

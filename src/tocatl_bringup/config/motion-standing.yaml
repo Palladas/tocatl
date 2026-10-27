@@ -7,9 +7,11 @@
 # (motors/declare_yaw_reference) so yaw is held where it is; commands are accepted only
 # for motors homed or yaw-referenced in this controller session.
 #
-# Authorized by Pranav 2026-10-27 for standing: every drive capped at 8 Nm (2x the
-# CyberGear 4 Nm continuous rating; written and read back before enable, restored after
-# confirmed disable), kp <= 100, speed <= 5 rad/s, target-to-measured step <= 0.5 rad.
+# Authorized by Pranav 2026-10-27 for standing: every drive capped at 12 Nm, the
+# CyberGear peak (3x its 4 Nm continuous rating; raised from 8 Nm the same day; written
+# and read back before enable, restored after confirmed disable), kp <= 100, speed
+# <= 5 rad/s, target-to-measured step <= 0.5 rad. Robot mass ~16 kg (Pranav): standing
+# needs ~5-9 Nm per hip on six legs, so keep holds short.
 # kd <= 5 is the controller's sanity bound. Feedforward torque is unchanged (0.5 Nm).
 # The 45 C readiness thermal guard still stops motion.
 motor_controller:
@@ -22,7 +24,7 @@ motor_controller:
     max_motor_kp: 100.0
     max_motor_kd: 5.0
     max_position_step_rad: 0.5
-    motion_torque_limit_nm: 8.0
+    motion_torque_limit_nm: 12.0
     poll_period_s: 0.1
     # Raw-encoder bounds relative to this session's references (homed stop for hip
     # pitch/knee, declared pose for yaw). Standing stances need the hip 1.7-2.1 rad off
