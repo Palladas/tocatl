@@ -146,8 +146,9 @@ authorized these limits on 2026-10-27:
 - kp ≤ 100, kd ≤ 5, speed ≤ 5 rad/s, each target within 0.5 rad of the measured position.
 - Feedforward torque is unchanged at 0.5 Nm. The 45 °C readiness guard still stops motion.
 
-The session commands the selected legs' **yaw** motors too, except disconnected 51. Leg 5's
-yaw is therefore free, and the leg can swing sideways under load.
+The session commands the selected legs' **yaw** motors too, all six including 51, which is
+back in service since 2026-10-27. 51 has passed read-only polling but hasn't been commanded
+yet; if can1 stalls, stop, reset can1 and see `docs/motor51-diagnosis-2026-10-26.md`.
 
 **Workflow**
 1. Rest the robot on flat, clear ground. Tick the checklist, the motion confirmation and the
@@ -175,7 +176,6 @@ yaw is therefore free, and the leg can swing sideways under load.
 **Not modelled:**
 - dynamic loads
 - foot slip
-- leg 5's free yaw
 - unequal load sharing
 - the controller's command loop, at about 7 Hz with all motors
 

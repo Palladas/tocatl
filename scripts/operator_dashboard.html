@@ -45,10 +45,10 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 
 <section class="panel"><div class="eyebrow">Step 1 · Controller</div><h2>Start motor_controller</h2>
 <div class="choices" id="profiles">
-<button class="choice" data-profile="telemetry" aria-pressed="true"><strong>Level 1 · Read-only telemetry</strong><span>hardware.yaml · polls 17 motors on both buses (51 excluded). No enable, mode change or motion.</span></button>
+<button class="choice" data-profile="telemetry" aria-pressed="true"><strong>Level 1 · Read-only telemetry</strong><span>hardware.yaml · polls all 18 motors on both buses. No enable, mode change or motion.</span></button>
 <button class="choice" data-profile="homing" aria-pressed="false"><strong>Level 2 · Hip/knee homing</strong><span>homing-hip-knee.yaml + allow_homing. Polls the 12 pitch/knee motors; homing runs only when you press a Home button.</span></button>
 <button class="choice" data-profile="motion" aria-pressed="false"><strong>Level 3 · Feet-in-air motion</strong><span>Homing plus motion for the selected legs: hip pitch and knee only, kp ≤ 30, every drive capped at 1.5 Nm, up to 5 rad/s. Nothing moves until you arm.</span></button>
-<button class="choice" data-profile="standing" aria-pressed="false"><strong>Level 4 · Standing</strong><span>Homing plus motion with yaw held at a declared pose: kp ≤ 100, every drive capped at 8 Nm (2× rated). Motor 51 stays out, so leg 5's yaw is free.</span></button>
+<button class="choice" data-profile="standing" aria-pressed="false"><strong>Level 4 · Standing</strong><span>Homing plus motion with yaw held at a declared pose: kp ≤ 100, every drive capped at 8 Nm (2× rated). All six hip yaws are held, including 51.</span></button>
 </div>
 <div id="homingOptions" hidden>
 <h3>Legs in homing.legs</h3><div class="legpick" id="legPick"></div>
@@ -68,7 +68,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label class="check"><input type="checkbox"><span>Motor-power disconnect within reach.</span></label>
 <label class="check"><input type="checkbox"><span>Fused harness OK.</span></label>
 <label class="check"><input type="checkbox"><span>No other process owns the bus (the server also checks).</span></label>
-<label class="check"><input type="checkbox"><span>Out-of-service motors identified: 51 disconnected.</span></label>
+<label class="check"><input type="checkbox"><span>All 18 motors connected; motor 51 is back in service since 2026-10-27 (watch can1).</span></label>
 </div>
 <div class="actions"><button class="primary" id="start">Start controller</button><button class="danger" id="stopCtl">Stop controller</button></div>
 <p class="muted" id="startHint"></p>
@@ -171,7 +171,7 @@ function needsAck(leg){return homingSelection(leg).some(l=>(state?.unvalidated_l
 function canOk(){return state&&state.can.length===2&&state.can.every(c=>c.operstate==='UP'&&c.state==='ERROR-ACTIVE'&&c.bitrate===1000000)}
 function robotFresh(){return state?.robot&&state.robot_age_s!==null&&state.robot_age_s<state.stale_after_s}
 function controls(){
- const s=state,blocked=!connected||!s||pending||!!s.busy,run=s?.running,homingRun=run&&(s.profile==='homing'||s.profile==='motion');
+ const s=state,blocked=!connected||!s||pending||!!s.busy,run=s?.running,homingRun=run&&!!s.profile&&s.profile!=='telemetry';
  for(const b of $('profiles').children)b.disabled=blocked||run;
  for(const i of $('legPick').querySelectorAll('input'))i.disabled=blocked||run;
  $('commissioning').disabled=$('motionConfirm').disabled=$('standingConfirm').disabled=blocked||run;

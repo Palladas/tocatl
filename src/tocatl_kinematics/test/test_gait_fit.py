@@ -61,9 +61,12 @@ def test_validation_flags_speed_cap_and_reports_shortest_period(geometry, joint_
 
 
 def test_validation_flags_out_of_service_yaw_only_when_it_moves(geometry, joint_map):
-    forward = validate_trajectory(plan(geometry, TripodGait(heading_rad=0.0)), geometry, joint_map)
+    # No motor is out of service since 51 returned (2026-10-27); the check stays for future use.
+    assert validate_trajectory(plan(geometry, TripodGait(heading_rad=0.0)), geometry, joint_map)['ok']
+    retired = CommandLimits(out_of_service=(51,))
+    forward = validate_trajectory(plan(geometry, TripodGait(heading_rad=0.0)), geometry, joint_map, retired)
     assert any('motor 51 is out of service' in v for v in forward['violations'])
-    sideways = validate_trajectory(plan(geometry, TripodGait(heading_rad=pi / 2)), geometry, joint_map)
+    sideways = validate_trajectory(plan(geometry, TripodGait(heading_rad=pi / 2)), geometry, joint_map, retired)
     assert not any('51' in v for v in sideways['violations'])
 
 
@@ -135,8 +138,8 @@ def test_cli_ik_and_gait_plan(tmp_path, capsys):
     assert cli.gait_main(['plan', '--heading-deg', '90', '--out', str(out), '--references', str(refs), *common]) == 0
     document = json.loads(out.read_text())
     assert document['validation']['ok'] and len(document['raw_rad']['12']) == len(document['times_s'])
-    assert cli.gait_main(['plan', '--heading-deg', '0', '--out', str(out), *common]) == 2
-    assert json.loads(out.read_text())['raw_rad'] is None
+    assert cli.gait_main(['plan', '--heading-deg', '0', '--out', str(out), *common]) == 0  # 51 back in service
+    assert json.loads(out.read_text())['raw_rad'] is None  # no session references given
     assert cli.gait_main(['plan', '--heading-deg', '90', '--body-height-m', '0.85', '--out', str(out), *common]) == 2
     assert json.loads(out.read_text())['joints_rad']['1'][0] is None
 

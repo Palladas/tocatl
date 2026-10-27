@@ -1,7 +1,8 @@
 """Check a planned trajectory against joint limits and the controller's command limits.
 
 Defaults mirror src/tocatl_bringup/config/hardware.yaml (max_motor_velocity_rad_s 0.21,
-max_position_step_rad 0.1) and the out-of-service motor 51. Limits are reported, not
+max_position_step_rad 0.1) and any out-of-service motors (none since 51 returned on
+2026-10-27). Limits are reported, not
 widened: a gait that needs more speed reports the slowest period that would fit.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ class CommandLimits:
     max_position_step_rad: float = 0.1
     command_period_s: float = 0.05
     min_reach_margin_m: float = 0.01
-    out_of_service: tuple[int, ...] = (51,)
+    out_of_service: tuple[int, ...] = ()
     still_tolerance_rad: float = 1e-3
 
 

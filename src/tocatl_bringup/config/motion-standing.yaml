@@ -2,8 +2,8 @@
 #   --params-file homing-hip-knee.yaml --params-file motion-standing.yaml
 #   -p allow_homing:=true -p allow_hardware_motion:=true
 #   -p actuation_motor_ids:=[...] -p telemetry_motor_ids:=[...] -p homing.legs:=[...]
-# (the operator dashboard builds this for the selected legs, including their yaw motors
-# except disconnected 51). Home every leg, then declare the yaw references
+# (the operator dashboard builds this for the selected legs, including all their yaw
+# motors; 51 is back in service since 2026-10-27). Home every leg, then declare the yaw references
 # (motors/declare_yaw_reference) so yaw is held where it is; commands are accepted only
 # for motors homed or yaw-referenced in this controller session.
 #

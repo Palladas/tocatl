@@ -228,7 +228,8 @@ def test_actuated_legs_from_controller_ids():
     from tocatl_kinematics.player import actuated_legs_from_ids
     assert actuated_legs_from_ids([12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]) == ([1, 2, 3, 4, 5, 6], [])
     assert actuated_legs_from_ids([23, 22]) == ([2], [])
-    assert actuated_legs_from_ids([11, 12, 13, 52, 53]) == ([1, 5], [11])  # standing: yaw held, 51 absent
+    assert actuated_legs_from_ids([11, 12, 13, 51, 52, 53]) == ([1, 5], [11, 51])  # standing: every yaw held
+    assert actuated_legs_from_ids([11, 12, 13, 52, 53]) == ([1, 5], [11])          # a yaw left out is fine
     for bad in ([], [11], [12], [12, 13, 22]):
         with pytest.raises(ValueError):
             actuated_legs_from_ids(bad)

@@ -1,9 +1,12 @@
 motor_controller:
   ros__parameters:
     backend: hardware
-    # Leg 5 yaw (51) is intentionally disconnected/excluded pending investigation.
-    telemetry_motor_ids: [11, 12, 13, 21, 22, 23, 31, 32, 33, 41, 42, 43, 52, 53, 61, 62, 63]
-    actuation_motor_ids: [11, 12, 13, 21, 22, 23, 31, 32, 33, 41, 42, 43, 52, 53, 61, 62, 63]
+    # Leg 5 yaw (51) back in service 2026-10-27 (Pranav): reconnected 2026-10-26 and passed
+    # read-only polling incl. the production transport (docs/motor51-diagnosis-2026-10-26.md).
+    # The 2026-10-25 can1 TX stall was not reproduced or explained: if can1 stalls again,
+    # stop the controller, reset can1, and follow that document's swap test.
+    telemetry_motor_ids: [11, 12, 13, 21, 22, 23, 31, 32, 33, 41, 42, 43, 51, 52, 53, 61, 62, 63]
+    actuation_motor_ids: [11, 12, 13, 21, 22, 23, 31, 32, 33, 41, 42, 43, 51, 52, 53, 61, 62, 63]
     can0_channel: can0
     can1_channel: can1
     poll_period_s: 0.5

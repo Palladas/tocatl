@@ -73,8 +73,9 @@ class CommandTests(unittest.TestCase):
                 self.assertIn('allow_hardware_motion: false', text)
                 if 'allow_homing' in text:
                     self.assertIn('allow_homing: false', text)
-                if 'telemetry_motor_ids:' in text:
-                    self.assertNotIn('51', text.split('telemetry_motor_ids:')[1].split('\n')[0])
+                if 'telemetry_motor_ids:' in text:  # every listed motor is a real inventory ID
+                    ids = text.split('telemetry_motor_ids:')[1].split('\n')[0].strip(' []').split(',')
+                    self.assertTrue(set(int(i) for i in ids) <= {l * 10 + j for l in range(1, 7) for j in (1, 2, 3)})
 
     def test_motion_profile_command_scopes_motors_to_selected_legs(self):
         argv = d.controller_command('motion', [2, 1], False, '/tmp/x/out.json')
@@ -85,12 +86,15 @@ class CommandTests(unittest.TestCase):
             self.assertIn(expected, argv)
         self.assertFalse(any('allow_hardware_motion' in a for a in d.controller_command('homing', [1], False, 'o')))
 
-    def test_standing_profile_includes_yaw_except_51(self):
+    def test_standing_profile_includes_every_yaw(self):
         argv = d.controller_command('standing', [1, 5], False, '/tmp/x/out.json')
         files = [argv[i + 1] for i, a in enumerate(argv) if a == '--params-file']
         self.assertEqual(files[-1], str(d.CONFIG / 'motion-standing.yaml'))
-        self.assertIn('actuation_motor_ids:=[11,12,13,52,53]', argv)
-        self.assertIn('telemetry_motor_ids:=[11,12,13,52,53]', argv)
+        self.assertIn('actuation_motor_ids:=[11,12,13,51,52,53]', argv)
+        self.assertIn('telemetry_motor_ids:=[11,12,13,51,52,53]', argv)
+        with patch.object(d, 'OUT_OF_SERVICE', (51,)):  # a motor can still be taken out again
+            self.assertIn('actuation_motor_ids:=[11,12,13,52,53]',
+                          d.controller_command('standing', [1, 5], False, '/tmp/x/out.json'))
         self.assertIn('allow_hardware_motion:=true', argv)
 
     def test_player_command_validates_inputs(self):

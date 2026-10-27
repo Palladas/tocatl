@@ -1,4 +1,4 @@
-# All six hip-pitch/knee pairs. Yaw motors (including disconnected 51) are excluded.
+# All six hip-pitch/knee pairs. Yaw motors are not homed (see motors/declare_yaw_reference).
 # Stop candidates for legs 2–6 are operator-declared unloaded references.
 # Finish direction checks and loaded-stop verification before powered homing.
 # /motors/home runs opposite groups (1,4), (2,5), (3,6); individual services select one leg.

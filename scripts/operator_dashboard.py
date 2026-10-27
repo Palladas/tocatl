@@ -28,8 +28,9 @@ EXECUTABLE = ROOT / 'install' / 'tocatl_lowlevel' / 'lib' / 'tocatl_lowlevel' / 
 BUSES = ('can0', 'can1')
 BITRATE = 1_000_000
 LEGS = (1, 2, 3, 4, 5, 6)
-# Physically disconnected; never polled or commanded (docs/can-debug-2026-10-25.md).
-OUT_OF_SERVICE = (51,)
+# Motors never polled or commanded. Empty since 2026-10-27: 51 is back in service
+# (docs/motor51-diagnosis-2026-10-26.md); put an ID here to take a motor out again.
+OUT_OF_SERVICE = ()
 # Legs whose stop references are operator-declared and unloaded only.
 UNVALIDATED_LEGS = (2, 3, 4, 5, 6)
 PROFILES = {

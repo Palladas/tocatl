@@ -91,13 +91,13 @@ Validation checks each trajectory against the following. It reports problems and
 - The joint limits.
 - The workspace reach margin (≥ 10 mm).
 - The controller's `max_motor_velocity_rad_s` (0.21, from `hardware.yaml`) and `max_position_step_rad` (0.1).
-- Out-of-service motor 51.
+- Any out-of-service motors (`CommandLimits.out_of_service`; none since 51 returned on 2026-10-27).
 
 It also reports the **shortest feasible period** under the velocity cap.
 
-**Finding with the seeded geometry:** walking forward moves leg 5's yaw, and 51 is disconnected.
-Walking along leg 5's own axis (heading ±90° with the legacy leg layout) needs no leg-5 yaw.
-Re-check this once the real leg layout is measured.
+**Note:** walking forward moves leg 5's yaw. That ruled out forward gaits while 51 was
+disconnected. Since 51 returned (2026-10-27), every heading is allowed, but yaw needs a
+declared reference before it can be commanded.
 
 ## Measurement procedure
 
@@ -150,7 +150,7 @@ The tests cover:
 - The joint map: round trip, ratio, coupling and velocities.
 - Body IK/FK.
 - Gait continuity, with stance feet fixed in the world.
-- Validation of the speed cap, motor 51, limits and reach.
+- Validation of the speed cap, out-of-service motors, limits and reach.
 - The fit routines and the CLIs.
 - The restored legacy geometry tests.
 
