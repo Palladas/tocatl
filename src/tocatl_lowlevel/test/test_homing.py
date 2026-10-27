@@ -588,3 +588,59 @@ def test_unload_preserves_feedback_and_effort_guards():
             seq.update(.9 if fault == 'speed' else .8, 0.,
                        4. if fault == 'effort' else 0., .04,
                        .5 if fault == 'stale' else .04)
+
+
+def passive_knee_worker():
+    from tocatl_lowlevel.homing import BoundedHipHoming
+    hw, samples = hardware()
+    worker = BoundedHipHoming(hw, KneeSeekConfig.from_start(12, .8028, .8), 'unused.json', float('nan'))
+    return worker, samples
+
+
+def refreshed(samples):
+    now = time.monotonic()
+    for mid in samples:
+        samples[mid] = replace(samples[mid], received=now, fault_received=now)
+
+
+@pytest.mark.parametrize('change,message', [
+    (dict(fault_received=time.monotonic() - 0.4), r'knee 13 fault-status age \d+\.\d+ s > 0\.25 s'),
+    (dict(received=time.monotonic() - 0.4), r'knee 13 state age \d+\.\d+ s > 0\.25 s'),
+    (dict(fault_received=None), 'knee 13 fault-status feedback missing'),
+])
+def test_passive_knee_names_the_stale_feedback(change, message):
+    """2026-10-27 15:35, leg 6: the combined message could not say which check tripped."""
+    from tocatl_lowlevel.homing import StaleFeedback
+    worker, samples = passive_knee_worker()
+    refreshed(samples)
+    samples[13] = replace(samples[13], **change)
+    with pytest.raises(StaleFeedback, match=message):
+        worker.checked_sample(initial=True)
+
+
+@pytest.mark.parametrize('change,message', [
+    (dict(torque=3.8), r'knee 13 torque \+3\.80 Nm beyond 3\.5 Nm'),
+    (dict(temperature=46.0), r'knee 13 temperature 46\.0 C >= 45 C'),
+    (dict(faults=('Over current',)), r"knee 13 faults \['Over current'\]"),
+    (dict(velocity=float('nan')), 'knee 13 non-finite velocity'),
+    (dict(position=13.0), r'knee 13 position 13\.000 outside'),
+])
+def test_passive_knee_names_each_failed_condition(change, message):
+    from tocatl_lowlevel.homing import StaleFeedback
+    worker, samples = passive_knee_worker()
+    refreshed(samples)
+    samples[13] = replace(samples[13], **change)
+    with pytest.raises(ValueError, match=message) as error:
+        worker.checked_sample(initial=True)
+    assert not isinstance(error.value, StaleFeedback)  # only staleness is retried before enable
+
+
+def test_passive_knee_reports_every_failure_at_once():
+    worker, samples = passive_knee_worker()
+    refreshed(samples)
+    samples[13] = replace(samples[13], torque=-4.0, temperature=47.0)
+    with pytest.raises(ValueError, match=r'torque -4\.00 Nm beyond 3\.5 Nm; knee 13 temperature 47\.0 C'):
+        worker.checked_sample(initial=True)
+    refreshed(samples)
+    samples[13] = replace(samples[13], torque=0.1, temperature=30.0)
+    worker.checked_sample(initial=True)  # healthy knee passes

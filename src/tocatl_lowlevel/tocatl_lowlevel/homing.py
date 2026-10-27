@@ -1280,16 +1280,38 @@ class PassiveKneeHipHoming(ActiveKneeHoming):
         sample, now = super().checked_sample(initial)
         knee = self.hardware.snapshot()[0][self.knee_id]
         now = time.monotonic()
-        if (knee.received is None or knee.fault_received is None or
-                not 0 <= now-knee.received < self.config.freshness or
-                not 0 <= now-knee.fault_received < self.config.freshness or
-                knee.mode != (0 if initial or self.knee_id not in self.owned_motor_ids() else 2) or
-                knee.faults or knee.state_faults or
-                not all(math.isfinite(v) for v in
-                        (knee.position, knee.velocity, knee.torque, knee.temperature)) or
-                not -12.5 <= knee.position <= 12.5 or
-                abs(knee.torque) > self.config.effort_limit or knee.temperature >= 45):
-            raise ValueError('Passive knee feedback, mode, or travel limit invalid')
+        knee_id, freshness = self.knee_id, self.config.freshness
+        # One message per failed condition, with its value: the combined message this
+        # replaced could not tell which one tripped (2026-10-27 15:35, leg 6).
+        stale = []
+        for name, received in (('state', knee.received), ('fault-status', knee.fault_received)):
+            if received is None:
+                stale.append(f'knee {knee_id} {name} feedback missing')
+            elif not 0 <= now-received < freshness:
+                stale.append(f'knee {knee_id} {name} age {now-received:.3f} s > {freshness} s')
+        if stale:
+            raise StaleFeedback('Passive knee: ' + '; '.join(stale))
+        problems = []
+        expected_mode = 0 if initial or knee_id not in self.owned_motor_ids() else 2
+        if knee.mode != expected_mode:
+            problems.append(f'knee {knee_id} mode {knee.mode}, expected {expected_mode}')
+        if knee.faults or knee.state_faults:
+            problems.append(f'knee {knee_id} faults {sorted(set(knee.faults) | set(knee.state_faults))}')
+        values = dict(position=knee.position, velocity=knee.velocity, torque=knee.torque,
+                      temperature=knee.temperature)
+        nonfinite = [name for name, value in values.items() if not math.isfinite(value)]
+        if nonfinite:
+            problems.append(f'knee {knee_id} non-finite {", ".join(nonfinite)}')
+        else:
+            if not -12.5 <= knee.position <= 12.5:
+                problems.append(f'knee {knee_id} position {knee.position:.3f} outside [-12.5, 12.5]')
+            if abs(knee.torque) > self.config.effort_limit:
+                problems.append(f'knee {knee_id} torque {knee.torque:+.2f} Nm beyond '
+                                f'{self.config.effort_limit} Nm')
+            if knee.temperature >= 45:
+                problems.append(f'knee {knee_id} temperature {knee.temperature:.1f} C >= 45 C')
+        if problems:
+            raise ValueError('Passive knee: ' + '; '.join(problems))
         previous = getattr(self, '_passive_knee_last', None)
         if previous is not None and knee.received > previous[0]:
             speed = abs(knee.position-previous[1])/(knee.received-previous[0])
