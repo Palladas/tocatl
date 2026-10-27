@@ -97,15 +97,19 @@ def controller_command(profile, legs=LEGS, commissioning=False, output_path=None
     return args
 
 
-def player_command(legs, kind, values, dry_run):
-    """Exact argv for tocatl_play (tocatl_kinematics.player)."""
+def player_command(legs, kind, values, dry_run, actuated_legs):
+    """Exact argv for tocatl_play (tocatl_kinematics.player). The controller only accepts
+    commands naming every actuated motor, so the session's legs are always passed:
+    those not being moved hold their pose."""
     if kind not in MOTION_KINDS:
         raise ValueError(f'Motion must be one of {MOTION_KINDS}')
     if (not isinstance(legs, list) or not legs or len(set(legs)) != len(legs) or
             any(type(leg) is not int or leg not in LEGS for leg in legs)):
         raise ValueError('Choose the legs to move')
+    if not set(legs) <= set(actuated_legs):
+        raise ValueError('Move only legs this controller session commands')
     args = [sys.executable, '-m', 'tocatl_kinematics.player', '--legs', ','.join(map(str, sorted(legs))),
-            '--kind', kind]
+            '--actuated-legs', ','.join(map(str, sorted(actuated_legs))), '--kind', kind]
     for name, value in values.items():
         kind_of = MOTION_FIELDS.get(name)
         if kind_of is None:
@@ -424,9 +428,6 @@ class Dashboard:
         with self.lock:
             if not self.running() or not PROFILES[self.profile]['homing']:
                 raise ValueError('Start the homing controller first')
-            grouping = data.get('grouping')
-            if grouping not in (None, 'tripods') or grouping and leg is not None:
-                raise ValueError('Tripod grouping applies only to homing all selected legs')
             if data.get('homing_confirmed') is not True:
                 raise ValueError('Confirm the homing checklist first')
             if leg is not None and leg not in self.legs:
@@ -437,8 +438,7 @@ class Dashboard:
         state, age = self.bridge.snapshot()
         if state is None or age > STALE_AFTER_S:
             raise ValueError('robot_state is not arriving; check the controller log')
-        name = (f'motors/leg_{leg}/home' if leg is not None else
-                'motors/home_tripods' if grouping == 'tripods' else 'motors/home')
+        name = 'motors/home' if leg is None else f'motors/leg_{leg}/home'
         success, message = self.bridge.call(name, 'trigger')
         self.event(f'{name}: {message}')
         if not success:
@@ -451,7 +451,9 @@ class Dashboard:
     def motion(self, data, dry_run):
         """Preview (dry run) or start the feet-in-air player for this Level 3 session."""
         legs = data.get('legs')
-        argv = player_command(legs, data.get('kind'), data.get('values', {}), dry_run)
+        with self.lock:
+            session_legs = list(self.legs)
+        argv = player_command(legs, data.get('kind'), data.get('values', {}), dry_run, session_legs)
         with self.lock:
             if not self.running() or not PROFILES[self.profile]['motion']:
                 raise ValueError('Start the Level 3 motion controller first')

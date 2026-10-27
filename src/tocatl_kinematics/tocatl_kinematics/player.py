@@ -9,6 +9,12 @@ Any FAULT/disarm, stale state or Ctrl-C stops the motion: the player requests a 
 (the safe direction) before it stops publishing, so ending a motion is an operator-style
 disarm, not a watchdog fault (a controller fault clears every leg's homing readiness).
 ``--dry-run`` plans and prints the report without publishing.
+
+The controller accepts a MotorCommand only if it names exactly its actuation_motor_ids,
+so every command carries all of them: the selected legs follow the plan, and the other
+actuated legs hold their measured pose (they must be homed and READY too, which the
+controller requires before arming anyway). The actuated set comes from
+``--actuated-legs`` or, if omitted, the controller's ``actuation_motor_ids`` parameter.
 """
 from __future__ import annotations
 
@@ -28,6 +34,30 @@ from tocatl_kinematics.motions import EnvelopeOffsets, PlaneMotion, plan_plane_m
 STATE_STALE_S = 0.5
 ARM_TIMEOUT_S = 120.0
 END_HOLD_S = 2.0
+
+
+def actuated_legs_from_ids(motor_ids_):
+    """Legs whose hip pitch and knee are both actuated; refuses yaw or half a leg."""
+    ids = set(motor_ids_)
+    legs = sorted({mid // 10 for mid in ids})
+    if not ids or any(mid % 10 == 1 for mid in ids):
+        raise ValueError(f'Controller actuates {sorted(ids)}; this player drives hip pitch and knee only')
+    for leg in legs:
+        if not {leg * 10 + 2, leg * 10 + 3} <= ids:
+            raise ValueError(f'Controller actuates only part of leg {leg}: {sorted(ids)}')
+    return legs
+
+
+def hold_violations(session_map, raw_start, legs, offsets: EnvelopeOffsets):
+    """Held legs must also sit inside the controller's home-relative envelope."""
+    problems = []
+    for leg in legs:
+        for motor_id, (low, high) in zip(motor_ids(leg)[1:], (offsets.hip_pitch, offsets.knee)):
+            offset = raw_start[motor_id] - session_map.references[motor_id]
+            if not low <= offset <= high:
+                problems.append(f'held motor {motor_id} sits {offset:+.3f} rad from home, outside '
+                                f'the controller envelope [{low:+.2f}, {high:+.2f}]')
+    return problems
 
 
 def session_inputs(state: dict, legs, joint_map):
@@ -55,16 +85,21 @@ def session_inputs(state: dict, legs, joint_map):
 class Streamer:
     """Pure decision logic for what to publish at each tick; the ROS node only feeds it."""
 
-    def __init__(self, trajectory, kp, kd, clock=time.monotonic):
+    def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None):
+        """``hold``: {motor_id: raw} for actuated motors that are not moving."""
         self.trajectory, self.kp, self.kd, self.clock = trajectory, kp, kd, clock
-        self.motor_ids = tuple(sorted(trajectory.raw))
+        self.hold = dict(hold or {})
+        if set(self.hold) & set(trajectory.raw):
+            raise ValueError('A motor cannot both move and hold')
+        self.motor_ids = tuple(sorted(set(trajectory.raw) | set(self.hold)))
         self.phase = 'HOLD'
         self.started = None
         self.waiting_since = clock()
         self.reason = ''
 
     def targets(self, index):
-        return [(mid, float(self.trajectory.raw[mid][index]), float(self.trajectory.raw_velocity[mid][index]))
+        return [(mid, float(self.hold[mid]), 0.0) if mid in self.hold else
+                (mid, float(self.trajectory.raw[mid][index]), float(self.trajectory.raw_velocity[mid][index]))
                 for mid in self.motor_ids]
 
     def step(self, safety_state, state_age):
@@ -98,7 +133,10 @@ class Streamer:
 
 def build_parser():
     parser = argparse.ArgumentParser(prog='tocatl_play', description=__doc__.splitlines()[0])
-    parser.add_argument('--legs', required=True, help='comma-separated legs, e.g. 1,2')
+    parser.add_argument('--legs', required=True, help='legs to move, comma-separated, e.g. 1,2')
+    parser.add_argument('--actuated-legs',
+                        help='legs the controller commands (default: read its actuation_motor_ids); '
+                             'actuated legs not in --legs hold their pose')
     defaults = PlaneMotion()
     for field in fields(PlaneMotion):
         parser.add_argument('--' + field.name.replace('_', '-'), type=type(getattr(defaults, field.name)),
@@ -118,14 +156,35 @@ def parse_legs(text):
     return legs
 
 
+def query_actuation_ids(node, rclpy, timeout=3.0):
+    """Read motor_controller's actuation_motor_ids parameter."""
+    from rclpy.parameter_client import AsyncParameterClient
+    client = AsyncParameterClient(node, 'motor_controller')
+    if not client.wait_for_services(timeout_sec=timeout):
+        raise ValueError('motor_controller parameters unavailable; pass --actuated-legs')
+    future = client.get_parameters(['actuation_motor_ids'])
+    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
+    result = future.result()
+    if result is None or not result.values:
+        raise ValueError('Could not read actuation_motor_ids; pass --actuated-legs')
+    return list(result.values[0].integer_array_value)
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    legs = parse_legs(args.legs)
-    motion = PlaneMotion(**{f.name: getattr(args, f.name) for f in fields(PlaneMotion)})
-    motion.validate()
-    if not (0 < args.kp <= 30 and 0 <= args.kd <= 2):
-        raise SystemExit('kp must be in (0, 30] and kd in [0, 2] (motion-feet-air.yaml limits)')
-    geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
+    try:
+        legs = parse_legs(args.legs)
+        actuated = parse_legs(args.actuated_legs) if args.actuated_legs else None
+        motion = PlaneMotion(**{f.name: getattr(args, f.name) for f in fields(PlaneMotion)})
+        motion.validate()
+        if not (0 < args.kp <= 30 and 0 <= args.kd <= 2):
+            raise ValueError('kp must be in (0, 30] and kd in [0, 2] (motion-feet-air.yaml limits)')
+        if actuated is not None and not set(legs) <= set(actuated):
+            raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
+        geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
+    except ValueError as error:
+        print(f'Refused: {error}', flush=True)
+        return 2
 
     import rclpy
     from rclpy.signals import SignalHandlerOptions
@@ -161,20 +220,29 @@ def main(argv=None):
             rclpy.spin_once(node, timeout_sec=0.1)
         if 'msg' not in latest:
             raise ValueError('No robot_state received; is the controller running?')
+        if actuated is None:
+            actuated = actuated_legs_from_ids(query_actuation_ids(node, rclpy))
+        if not set(legs) <= set(actuated):
+            raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
+        held = [leg for leg in actuated if leg not in legs]
         state = _state_dict(latest['msg'])
-        session_map, start, raw_start = session_inputs(state, legs, joint_map)
-        trajectory = plan_plane_motion(geometry, session_map, start, motion)
+        session_map, start, raw_start = session_inputs(state, actuated, joint_map)
+        trajectory = plan_plane_motion(geometry, session_map, {leg: start[leg] for leg in legs}, motion)
+        hold = {mid: raw_start[mid] for leg in held for mid in motor_ids(leg)[1:]}
+        trajectory.violations += hold_violations(session_map, raw_start, held, EnvelopeOffsets())
         report = trajectory.summary(EnvelopeOffsets(), session_map)
+        report['held_legs'] = held
         print(json.dumps(report, indent=1), flush=True)
         if not trajectory.ok:
             raise ValueError('Plan rejected: ' + '; '.join(trajectory.violations))
         if args.dry_run:
             print('Dry run: nothing published.', flush=True)
             return 0
-        streamer = Streamer(trajectory, args.kp, args.kd)
+        streamer = Streamer(trajectory, args.kp, args.kd, hold=hold)
         streaming = True
-        print(f'Holding legs {legs} at the measured pose. Arm the motors to start '
-              f'({report["duration_s"]:.1f} s motion).', flush=True)
+        print(f'Holding legs {actuated} at the measured pose. Arm the motors to start '
+              f'({report["duration_s"]:.1f} s motion of legs {legs}'
+              + (f'; legs {held} keep holding' if held else '') + ').', flush=True)
         last_phase = streamer.phase
         while True:
             tick = time.monotonic()

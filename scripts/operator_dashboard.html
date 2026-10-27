@@ -76,13 +76,14 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label class="check"><input type="checkbox" id="homeClear"><span>Path to every selected stop is clear, the leg is supported so it meets the stop and not its weight, and I am at the disconnect.</span></label>
 <label class="check" id="unvalidatedRow"><input type="checkbox" id="unvalidated"><span><strong class="warn">Legs 2–6</strong> have only operator-declared <em>unloaded</em> stop references (directions −1). This is a first powered test; I will watch the first contact.</span></label>
 <div class="legs" id="legCards"></div>
-<div class="actions"><button id="homeAll">Home all selected legs (pairs 1+4, 2+5, 3+6)</button><button id="homeTripods">Home all as tripods (1-3-5, then 2-4-6)</button><button class="danger" id="cancel">Cancel homing</button></div>
+<div class="actions"><button id="homeAll">Home all selected legs (pairs 1+4, 2+5, 3+6)</button><button class="danger" id="cancel">Cancel homing</button></div>
 <p class="muted" id="homeHint"></p>
 </section>
 
 <section class="panel" id="motionPanel" hidden><div class="eyebrow">Step 3 · Motion</div><h2>Feet-in-air motion</h2>
 <p class="muted">Moves each selected foot in its own leg plane, hip pitch and knee only, starting and ending at the measured pose. Preview plans from the live homes and checks joint limits, the controller envelope and speed; nothing is sent. Run streams hold commands; then Arm starts the motion. Legs must be homed and READY in this session.</p>
-<h3>Legs</h3><div class="legpick" id="motionLegs"></div>
+<h3>Legs to move</h3><div class="legpick" id="motionLegs"></div>
+<small>Every leg in this session is commanded; legs you don't tick hold their current pose while armed.</small>
 <div class="recfields motionfields">
 <label>Motion<select id="motionKind"><option value="nudge">Nudge (joint change and back)</option><option value="pose">Pose (foot to r, z and back)</option><option value="circle">Circle (loops around r, z)</option></select></label>
 <label>Max motor speed (rad/s)<input id="mSpeed" type="number" value="0.1" min="0.02" max="0.21" step="0.01"></label>
@@ -172,7 +173,7 @@ function controls(){
  $('unvalidatedRow').hidden=!(s?.legs||[]).some(l=>(s.unvalidated_legs||[]).includes(l));
  const canHome=leg=>!blocked&&homingRun&&robotFresh()&&$('homeClear').checked&&(!needsAck(leg)||$('unvalidated').checked);
  for(const b of $('legCards').querySelectorAll('button'))b.disabled=!canHome(Number(b.dataset.leg));
- $('homeAll').disabled=$('homeTripods').disabled=!canHome(null)||!(s?.legs||[]).length;
+ $('homeAll').disabled=!canHome(null)||!(s?.legs||[]).length;
  $('homeHint').textContent=!homingRun?'Start the Level 2 controller to home.':!robotFresh()?'Waiting for fresh robot_state.':!$('homeClear').checked?'Confirm the homing checklist.':'Only one homing request at a time; the controller rejects repeats while running.';
  for(const b of document.querySelectorAll('[data-reset]'))b.disabled=blocked||run||s.preview_only;
  $('canRefresh').disabled=blocked||s.preview_only;
@@ -258,9 +259,9 @@ function renderRecording(s){const r=s.recording;
 async function poll(){try{const r=await fetch('/state',{cache:'no-store'});render(await r.json())}
  catch(e){connected=false;$('connection').textContent='Disconnected';$('connection').className='badge bad';controls()}
  setTimeout(poll,500)}
-async function home(leg,grouping){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+(grouping==='tripods'?' as tripods (1, 3, 5 together, then 2, 4, 6)':' (opposite legs move at the same time: 1+4, 2+5, 3+6)');
+async function home(leg){const label=leg?'leg '+leg:'legs '+state.legs.join(', ')+' (opposite legs move at the same time: 1+4, 2+5, 3+6)';
  if(!confirm('Start homing '+label+'? Motors will move toward their stops.'))return;
- await post('/home',{leg:leg||null,grouping:grouping||null,homing_confirmed:$('homeClear').checked,unvalidated_confirmed:$('unvalidated').checked}).catch(()=>{});
+ await post('/home',{leg:leg||null,homing_confirmed:$('homeClear').checked,unvalidated_confirmed:$('unvalidated').checked}).catch(()=>{});
  $('homeClear').checked=false;$('unvalidated').checked=false;controls()}
 for(const b of $('profiles').children)b.onclick=()=>setProfile(b.dataset.profile);
 for(const i of $('checklist').querySelectorAll('input'))i.onchange=controls;
@@ -270,7 +271,6 @@ const stop=()=>{if(confirm('Stop the controller? Homing is cancelled first, then
 $('stopCtl').onclick=$('stopCtl2').onclick=stop;
 $('cancel').onclick=$('cancel2').onclick=()=>post('/disarm').catch(()=>{});
 $('homeAll').onclick=()=>home(null);
-$('homeTripods').onclick=()=>home(null,'tripods');
 $('motionKind').onchange=motionKind;$('motionClear').onchange=controls;
 $('motionPreview').onclick=()=>post('/motion_preview',motionPayload()).catch(()=>{});
 $('motionRun').onclick=async()=>{try{await post('/motion_run',{...motionPayload(),motion_confirmed:$('motionClear').checked});$('motionClear').checked=false;controls()}catch(e){}};

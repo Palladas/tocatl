@@ -71,9 +71,6 @@ class MotorController(Node):
             elif self.motion.allowed:
                 raise ValueError('Combined homing/actuation requires homing.method=hip_knee')
             self.homing_service = self.create_service(Trigger, 'motors/home', self.home)
-            if hasattr(self.homing, 'groups'):
-                self.tripod_homing_service = self.create_service(
-                    Trigger, 'motors/home_tripods', partial(self.home, grouping='tripods'))
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
@@ -124,22 +121,18 @@ class MotorController(Node):
         response.message = 'Mock motors enabled' if request.data else 'Mock motors disabled'
         return response
 
-    def home(self, request, response, leg_id=None, grouping=None):
+    def home(self, request, response, leg_id=None):
         try:
             with self.motion.lock:
                 if self.motion.requested or self.motion.armed or self.motion.stop_pending:
                     raise ValueError('Disarm and confirm stopped motors before homing')
             self.commands.clear()
-            if leg_id is None and grouping is not None:
-                self.homing.start(grouping=grouping)
-            elif leg_id is None:
+            if leg_id is None:
                 self.homing.start()
             else:
                 self.homing.start([leg_id])
             self.homing_was_active = True
-            selection = (f'leg {leg_id}' if leg_id is not None else
-                         'configured legs as tripods 1-3-5 then 2-4-6' if grouping == 'tripods' else
-                         'configured legs')
+            selection = f'leg {leg_id}' if leg_id is not None else 'configured legs'
             self.get_logger().info(f'Homing started for {selection}')
             response.success, response.message = True, 'Homing requested'
         except ValueError as error:

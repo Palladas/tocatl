@@ -1,9 +1,10 @@
 """Batch homing against a bus with real timing: 10 ms per message under one shared lock.
 
 Opt-in (TOCATL_TIMING_TESTS=1): these measure wall-clock margins and are too timing
-sensitive to gate every run. On 2026-10-27 the model reproduced the robot's tripod
-startup failure (feedback 0.30 s vs 0.35 s on the robot), and showed tripods exceed the
-0.25 s fault-status freshness in steady state; pairs pass but run close to the limit.
+sensitive to gate every run. On 2026-10-27 the model reproduced the robot's three-leg
+(tripod) startup failure (feedback 0.30 s vs 0.35 s on the robot) and showed three legs
+at once exceed the 0.25 s fault-status freshness in steady state, so batch homing stays
+with opposite pairs. Pairs pass, but close to the limit (worst fault age ~0.24 s).
 
 The other homing tests use feedback that is always fresh, which hides lock contention.
 Here a poll thread refreshes samples only as fast as the real driver can send, so a
@@ -162,20 +163,12 @@ def timed(monkeypatch):
     bus.close()
 
 
-TRIPOD_LIMIT = pytest.mark.xfail(
-    strict=False, reason='Six motors on one 10 ms/message lock: fault-status feedback ages to 0.27-0.32 s, '
-    'past the 0.25 s freshness limit. Needs per-bus transport or a limit change (see docs/operator-dashboard.md).')
-
-
-@pytest.mark.parametrize('grouping,legs', [
-    ('pairs', (1, 4)), ('pairs', (2, 5)),
-    pytest.param('tripods', (1, 3, 5), marks=TRIPOD_LIMIT),
-    pytest.param('tripods', range(1, 7), marks=TRIPOD_LIMIT)])
-def test_batch_homing_survives_real_lock_contention(timed, tmp_path, grouping, legs):
+@pytest.mark.parametrize('legs', [(1, 4), (2, 5), range(1, 7)])
+def test_pair_batches_survive_real_lock_contention(timed, tmp_path, legs):
     worker = HipKneeHoming(timed, tmp_path / 'homes.json', profiles=profiles(), legs=tuple(legs))
     # Start like the dashboard does: from the slow 0.5 s full sweep, so feedback is up to 0.5 s old.
     time.sleep(0.6)
-    worker.start(grouping=grouping)
+    worker.start()
     worker.thread.join(60)
     assert not worker.thread.is_alive()
     assert not worker.faulted, worker.reason

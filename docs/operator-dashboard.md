@@ -63,14 +63,15 @@ Each controller start creates `~/tocatl-runs/dashboard-<profile>-<UTC stamp>/` h
 - Leg readiness is session-only, as in the controller.
 - Not yet run against hardware. Offline tests: `python3 -m pytest test/test_operator_dashboard.py`.
 
-## Homing all legs as tripods
+## Homing all legs together
 
-**Home all as tripods** homes legs 1, 3 and 5 at the same time, then 2, 4 and 6 (service
-`motors/home_tripods`). **Home all selected legs** keeps the opposite pairs 1+4, 2+5, 3+6.
-
-Six motors is the most that fits at once. Every CAN message costs the driver 10 ms, and one
-lock serializes both buses. Polling 12 motors takes about 240 ms, which leaves no margin
-under the 0.25 s feedback freshness guard. Tripods have not been powered-tested.
+**Home all selected legs** homes opposite pairs 1+4, then 2+5, then 3+6: four motors at
+once. Three legs at once (tripods 1-3-5 / 2-4-6) were tried on 2026-10-27 and removed.
+Every CAN message costs the driver 10 ms, and one lock serializes both buses, so six motors'
+fault-status feedback ages past the 0.25 s freshness limit. That was the cause of the
+robot's 22:08 and 22:12 failures, and the timing model in
+`src/tocatl_lowlevel/test/test_homing_timing.py` (run with `TOCATL_TIMING_TESTS=1`)
+reproduces it. Pairs fit, but close to the limit.
 
 ## Level 3 · Feet-in-air motion
 
@@ -101,6 +102,22 @@ The limits were authorized by Pranav on 2026-10-26 for this profile only:
    measured pose.
 6. Press **Arm motors**. The motion plays, holds the start pose for 2 s, and the player
    disarms.
+
+**Commands always name every leg in the session.** The controller rejects any
+`MotorCommand` that doesn't name exactly its `actuation_motor_ids`, which are all the legs
+the Level 3 session was started with. So the player commands all of them: the legs you
+tick move, and the rest hold their measured pose. Every session leg must therefore be
+homed and READY before a motion runs.
+
+On 2026-10-27 at 22:16, a leg-2-only motion in a six-leg session had all 2397 commands
+rejected for this reason and never armed. Fixed in the player the same day.
+
+**Prefer two legs at a time.**
+- Two-leg sessions work.
+- A six-leg nudge at 22:19 completed, but 9 of its commands were rejected. Legs 5 and 6
+  lagged their targets by more than the 0.1 rad step limit, because twelve motors make the
+  bus loop slow.
+- Start the Level 3 session with only the legs you plan to move.
 
 **Stop motion** disarms and interrupts the player at any point. The player also disarms on
 its own if the controller faults or leaves ARMED, or if `robot_state` goes stale. Disarming,

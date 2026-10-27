@@ -165,11 +165,16 @@ using hip pitch and knee only. Yaw has no session reference, so yaw is never com
 3. Streams `MotorCommand` holds until the operator arms.
 4. Plays the motion, then disarms.
 
+Every command names all the motors the controller actuates: the selected legs follow the
+plan, and the other actuated legs hold their measured pose. The actuated set comes from
+`--actuated-legs`, or from the controller's `actuation_motor_ids` parameter if that's
+omitted.
+
 Run it from the operator dashboard's Level 3 panel (see `operator-dashboard.md`). To preview
 without sending anything:
 
 ```bash
-ros2 run tocatl_kinematics tocatl_play --legs 1 --kind nudge --dry-run
+ros2 run tocatl_kinematics tocatl_play --legs 1 --actuated-legs 1,2 --kind nudge --dry-run
 ```
 
 Durations are set so no motor exceeds `--max-speed-rad-s` (default 0.1). For example,

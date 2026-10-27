@@ -160,3 +160,51 @@ def test_parse_legs():
     for bad in ('', '0', '7', '1,8'):
         with pytest.raises(ValueError):
             parse_legs(bad)
+
+
+def test_actuated_legs_from_controller_ids():
+    from tocatl_kinematics.player import actuated_legs_from_ids
+    assert actuated_legs_from_ids([12, 13, 22, 23, 32, 33, 42, 43, 52, 53, 62, 63]) == [1, 2, 3, 4, 5, 6]
+    assert actuated_legs_from_ids([23, 22]) == [2]
+    for bad in ([], [11, 12, 13], [12], [12, 13, 22]):
+        with pytest.raises(ValueError):
+            actuated_legs_from_ids(bad)
+
+
+def test_streamer_names_every_actuated_motor_and_holds_the_rest(geometry, session):
+    """The 2026-10-27 22:16 run sent leg 2 alone to a 6-leg session: all 2397 commands rejected."""
+    clock = Clock()
+    start = start_pose(session, (1, 2))
+    trajectory = plan_plane_motion(geometry, session, {2: start[2]}, PlaneMotion())
+    hold = {12: HOMES[12] + 0.005, 13: HOMES[13] + 0.1}
+    s = Streamer(trajectory, 30.0, 2.0, clock=clock, hold=hold)
+    first = s.step('DISARMED', 0.02)
+    assert [t[0] for t in first] == [12, 13, 22, 23]
+    s.step('ARMED', 0.02)
+    clock.t = trajectory.times[-1] / 2
+    middle = {mid: (pos, vel) for mid, pos, vel in s.step('ARMED', 0.02)}
+    assert middle[12] == (pytest.approx(hold[12]), 0.0) and middle[13] == (pytest.approx(hold[13]), 0.0)
+    assert middle[22][0] != pytest.approx(trajectory.raw[22][0])
+    with pytest.raises(ValueError):
+        Streamer(trajectory, 30.0, 2.0, hold={22: 0.0})
+
+
+def test_held_legs_must_sit_inside_the_envelope(session):
+    from tocatl_kinematics.player import hold_violations
+    raw = {12: HOMES[12] + 0.005, 13: HOMES[13] + 0.1}
+    assert hold_violations(session, raw, [1], EnvelopeOffsets()) == []
+    raw[12] = HOMES[12] + 1.7
+    assert 'held motor 12' in hold_violations(session, raw, [1], EnvelopeOffsets())[0]
+
+
+@pytest.mark.parametrize('argv,message', [
+    (['--legs', '2', '--max-speed-rad-s', '0.4'], 'max_speed_rad_s'),   # 22:16 dry run crashed instead
+    (['--legs', '2', '--kp', '50'], 'kp must be'),
+    (['--legs', '4', '--actuated-legs', '1,2'], 'not commanded'),
+    (['--legs', '9'], 'Choose legs'),
+])
+def test_bad_inputs_refuse_cleanly_before_ros(argv, message, capsys):
+    from tocatl_kinematics.player import main
+    assert main(argv) == 2
+    out = capsys.readouterr().out
+    assert out.startswith('Refused:') and message in out

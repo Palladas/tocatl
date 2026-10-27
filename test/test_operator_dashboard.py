@@ -86,15 +86,19 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(any('allow_hardware_motion' in a for a in d.controller_command('homing', [1], False, 'o')))
 
     def test_player_command_validates_inputs(self):
-        argv = d.player_command([2, 1], 'pose', {'r_m': 0.35, 'z_m': -0.05, 'loops': 1}, dry_run=True)
-        self.assertEqual(argv[1:7], ['-m', 'tocatl_kinematics.player', '--legs', '1,2', '--kind', 'pose'])
+        argv = d.player_command([2, 1], 'pose', {'r_m': 0.35, 'z_m': -0.05, 'loops': 1}, dry_run=True,
+                                actuated_legs=[1, 2, 3])
+        self.assertEqual(argv[1:9], ['-m', 'tocatl_kinematics.player', '--legs', '1,2', '--actuated-legs', '1,2,3',
+                                     '--kind', 'pose'])
         self.assertIn('--r-m', argv)
         self.assertEqual(argv[-1], '--dry-run')
         for legs, kind, values in (([1], 'walk', {}), ([], 'pose', {}), ([7], 'pose', {}), ([1, 1], 'pose', {}),
                                    ([1], 'pose', {'kp': 100.0}), ([1], 'pose', {'r_m': float('nan')}),
                                    ([1], 'circle', {'loops': 1.5}), ([1], 'pose', {'r_m': True})):
             with self.assertRaises(ValueError):
-                d.player_command(legs, kind, values, dry_run=False)
+                d.player_command(legs, kind, values, dry_run=False, actuated_legs=[1, 2, 3, 4, 5, 6])
+        with self.assertRaises(ValueError):
+            d.player_command([4], 'nudge', {}, dry_run=True, actuated_legs=[1, 2])
 
     def test_clean_replaces_nonfinite(self):
         self.assertEqual(d.clean({'a': [float('nan'), 1.0, float('inf')]}), {'a': [None, 1.0, None]})
@@ -249,15 +253,6 @@ class ControllerTests(ControllerBase):
         self.assertEqual(self.bridge.call.call_args.kwargs, {'data': False})
         self.assertEqual(proc.signals, [d.signal.SIGINT])
 
-    def test_tripod_home_calls_tripod_service(self):
-        self.start(legs=[1])
-        self.dash.home(dict(leg=None, grouping='tripods', homing_confirmed=True))
-        self.assertEqual(self.bridge.call.call_args.args[0], 'motors/home_tripods')
-        with self.assertRaises(ValueError):
-            self.dash.home(dict(leg=1, grouping='tripods', homing_confirmed=True))
-        with self.assertRaises(ValueError):
-            self.dash.home(dict(leg=None, grouping='all', homing_confirmed=True))
-
     def test_level3_needs_motion_confirmation_and_allows_homing(self):
         with patch.object(d.subprocess, 'Popen') as popen, self.assertRaises(ValueError):
             self.dash.start_controller(dict(profile='motion', legs=[1], checklist_confirmed=True))
@@ -283,6 +278,7 @@ class ControllerTests(ControllerBase):
             self.dash.motion(dict(legs=[1], kind='nudge', values={'max_speed_rad_s': 0.05},
                                   motion_confirmed=True), dry_run=False)
         self.assertNotIn('--dry-run', popen.call_args.args[0])
+        self.assertIn('--actuated-legs', popen.call_args.args[0])
         with self.assertRaises(ValueError):  # one motion at a time
             self.dash.motion(dict(legs=[1], kind='nudge'), dry_run=True)
         with self.assertRaises(ValueError):
