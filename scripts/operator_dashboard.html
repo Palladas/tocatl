@@ -80,7 +80,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label class="check"><input type="checkbox" id="homeClear"><span>Path to every selected stop is clear, the leg is supported so it meets the stop and not its weight, and I am at the disconnect.</span></label>
 <label class="check" id="unvalidatedRow"><input type="checkbox" id="unvalidated"><span><strong class="warn">Legs 2–6</strong> have only operator-declared <em>unloaded</em> stop references (directions −1). This is a first powered test; I will watch the first contact.</span></label>
 <div class="legs" id="legCards"></div>
-<div class="actions" id="yawRow" hidden><button id="declareYaw">Declare yaw references (hold yaw where it is)</button><small class="muted">After homing, with the legs posed for standing; motors must be disabled. Re-declare after any rehome or fault.</small></div>
+<div class="actions" id="yawRow" hidden><button id="declareYaw">Declare yaw references (hold yaw where it is)</button><small class="muted" id="yawHint">After homing, with the legs posed for standing; motors must be disabled. Re-declare after any rehome or fault.</small></div>
 <div class="actions"><button id="homeAll">Home all selected legs (pairs 1+4, 2+5, 3+6)</button><button class="danger" id="cancel">Cancel homing</button></div>
 <p class="muted" id="homeHint"></p>
 </section>
@@ -176,6 +176,10 @@ function controls(){
  for(const i of $('legPick').querySelectorAll('input'))i.disabled=blocked||run;
  $('commissioning').disabled=$('motionConfirm').disabled=$('standingConfirm').disabled=blocked||run;
  $('yawRow').hidden=!(run&&s.yaw_profile);$('declareYaw').disabled=blocked||!run||!s.yaw_profile||!!s.player_running;
+ const legInfo=Object.fromEntries((s?.robot?.legs||[]).map(l=>[l.leg,l])),sessionLegs=s?.legs||[];
+ const yawPending=s?.yaw_profile?sessionLegs.filter(l=>!legInfo[l]?.yaw_declared):[],allHomed=sessionLegs.length&&sessionLegs.every(l=>legInfo[l]?.ready);
+ $('declareYaw').className=s?.yaw_profile&&allHomed&&yawPending.length?'primary':'';
+ $('yawHint').textContent=!s?.yaw_profile?'':!allHomed?'Home every session leg first; homing a leg clears its yaw reference.':yawPending.length?'Declare now: legs '+yawPending.join(', ')+' have no yaw reference, and arming is refused until they do.':'All session yaws are held at their declared references.';
  for(const i of $('checklist').querySelectorAll('input'))i.disabled=blocked||run;
  $('start').disabled=blocked||run||s.preview_only||!checklistDone()||(profile!=='telemetry'&&!legs.size)||((profile==='motion'||profile==='standing')&&!$('motionConfirm').checked)||(profile==='standing'&&!$('standingConfirm').checked);
  $('stopCtl').disabled=$('stopCtl2').disabled=blocked||!run;
@@ -195,7 +199,7 @@ function controls(){
  for(const el of $('motionPanel').querySelectorAll('input,select'))el.disabled=blocked||player;
  $('motionPreview').disabled=blocked||!motionRun||player||!mLegs;
  $('motionRun').disabled=blocked||!motionRun||player||!mLegs||!$('motionClear').checked;
- $('arm').disabled=!connected||pending||!player||s.player_mode!=='run'||armed;
+ $('arm').disabled=!connected||pending||!player||s.player_mode!=='run'||armed||(s.yaw_profile&&yawPending.length>0);
  $('motionStop').disabled=!connected||pending||!(player||armed);
  $('motionStatus').textContent=!motionRun?'':player&&s.player_mode==='preview'?'Planning…':player&&!armed?'Streaming hold commands. Press Arm motors to start the motion.':player&&armed?'Moving. Stop motion disarms immediately.':!mLegs?'Choose legs to move.':!$('motionClear').checked?'Preview anytime; confirm the path is clear to run.':'Ready: Run motion streams hold commands; nothing moves until you arm.';
  const recActive=!!s?.recording?.active;
@@ -227,7 +231,7 @@ function renderLegs(s){const byLeg=Object.fromEntries((s.robot?.legs||[]).map(l=
   $('legCards').innerHTML=s.legs.map(l=>`<div class="leg" id="leg${l}"><h3><span>Leg ${l}</span><small id="legState${l}"></small></h3><p id="legReason${l}"></p><button data-leg="${l}">Home leg ${l}</button></div>`).join('');
   for(const b of $('legCards').querySelectorAll('button'))b.onclick=()=>home(Number(b.dataset.leg))}
  for(const l of s.legs){const x=byLeg[l];$('leg'+l).className='leg'+(x?.ready?' ready':'');
-  $('legState'+l).textContent=x?(x.ready?'READY':x.homed?'homed':'not homed')+(s.unvalidated_legs.includes(l)?' · ref unvalidated':''):'—';
+  $('legState'+l).textContent=x?(x.ready?'READY':x.homed?'homed':'not homed')+(s.yaw_profile?(x.yaw_declared?' · yaw held':' · yaw not declared'):'')+(s.unvalidated_legs.includes(l)?' · ref unvalidated':''):'—';
   $('legState'+l).className=x?.ready?'good':'';
   $('legReason'+l).textContent=x?(x.home_positions.length?'Home '+x.home_positions.map(v=>fmt(v,4)).join(' / ')+' · ':'')+x.status_reason:''}
  $('homeStatus').textContent=s.robot?s.robot.safety_state+' · '+s.robot.status_reason:'—'}

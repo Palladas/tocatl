@@ -214,7 +214,8 @@ def robot_state_dict(msg):
                      torque=m.torque_estimate_nm, temperature=m.temperature_c, faults=list(m.faults))
                 for m in msg.motors],
         legs=[dict(leg=l.leg_id, motor_ids=list(l.motor_ids), homed=l.homed, ready=l.ready,
-                   home_positions=list(l.home_positions_rad), status_reason=l.status_reason)
+                   home_positions=list(l.home_positions_rad), status_reason=l.status_reason,
+                   yaw_declared=l.scope == 'pitch_knee_yaw')
               for l in msg.legs])
 
 
@@ -513,6 +514,13 @@ class Dashboard:
                 raise ValueError('Run a motion first; arming needs its commands streaming')
             if data.get('arm_confirmed') is not True:
                 raise ValueError('Confirm you are ready to arm')
+            yaw_session, legs = PROFILES[self.profile]['yaw'], list(self.legs)
+        if yaw_session:
+            state, _ = self.bridge.snapshot()
+            declared = {l['leg'] for l in (state or {}).get('legs', []) if l.get('yaw_declared')}
+            missing = [leg for leg in legs if leg * 10 + 1 not in OUT_OF_SERVICE and leg not in declared]
+            if missing:
+                raise ValueError(f'Declare yaw references first: legs {missing} have none this session')
         success, message = self.bridge.call('motors/enable', 'setbool', data=True)
         self.event(f'Arm: {message}')
         if not success:

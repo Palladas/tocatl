@@ -23,6 +23,41 @@ class Sample:
     faults: tuple = ()
 
 
+# While a homing batch polls its motors at full rate, other motors are polled in the
+# background, in rotation. Ready legs must be refreshed well inside stale_after, or
+# readiness clears them as "feedback lost" (2026-10-27, Level 4: 14-16 background motors
+# at one per sweep aged to ~1.5 s). Polling more motors per sweep starves the homing pair
+# (0.25 s guard), so the homing coordinator narrows the rotation to the motors readiness
+# checks (``background_motors``), and more than one per sweep is used only if needed.
+BACKGROUND_REFRESH_FRACTION = 2 / 3
+
+
+def background_per_sweep(background_count, sweep_s, refresh_s):
+    """How many background motors each priority sweep must poll so that every one is
+    refreshed within ``refresh_s``, given the measured sweep duration."""
+    if background_count <= 0:
+        return 0
+    if not math.isfinite(sweep_s) or sweep_s <= 0:
+        return 1
+    return max(1, min(background_count, math.ceil(background_count * sweep_s / refresh_s)))
+
+
+def select_drivers(drivers, priority, background_index, per_sweep, background_ids=None):
+    """(drivers to poll this sweep, next background index): priority motors first, then
+    ``per_sweep`` background motors continuing the rotation. ``background_ids`` (if given)
+    limits the rotation to those motors while priority polling is active."""
+    if priority is None:
+        return list(drivers), background_index
+    ids = (priority,) if isinstance(priority, int) else priority
+    selected = [d for d in drivers if d.motor_id in ids]
+    background = [d for d in drivers if d.motor_id not in ids and
+                  (background_ids is None or d.motor_id in background_ids)]
+    if not background:
+        return selected, background_index
+    chosen = [background[(background_index + i) % len(background)] for i in range(per_sweep)]
+    return selected + chosen, background_index + per_sweep
+
+
 class AddressedMotor:
     """Logical inventory identity backed by a different physical CAN address."""
     def __init__(self, logical_motor_id, driver):
@@ -74,6 +109,7 @@ class HardwareTelemetry:
         self.drivers = []
         self.error = ''
         self.priority_motor = None
+        self.background_motors = None  # callable -> motor IDs to rotate during priority polling
         try:
             for logical, channel in channels.items():
                 bus = can_module.interface.Bus(interface=interface, channel=channel,
@@ -149,17 +185,19 @@ class HardwareTelemetry:
 
     def poll(self):
         background_index = 0
+        sweep_s = math.nan  # measured duration of the last priority sweep
         while not self.stop_event.is_set():
             started = time.monotonic()
             errors = []
             priority = self.priority_motor
-            drivers = self.drivers
-            if priority is not None:
-                ids = (priority,) if isinstance(priority, int) else priority
-                selected = [d for d in drivers if d.motor_id in ids]
-                background = [d for d in drivers if d.motor_id not in ids]
-                drivers = selected + ([background[background_index % len(background)]] if background else [])
-                background_index += 1
+            ids = () if priority is None else ((priority,) if isinstance(priority, int) else priority)
+            source = self.background_motors
+            background_ids = None if source is None or priority is None else set(source())
+            waiting = sum(d.motor_id not in ids and (background_ids is None or d.motor_id in background_ids)
+                          for d in self.drivers)
+            per_sweep = background_per_sweep(waiting, sweep_s, self.stale_after * BACKGROUND_REFRESH_FRACTION)
+            drivers, background_index = select_drivers(self.drivers, priority, background_index, per_sweep,
+                                                       background_ids)
             for driver in drivers:
                 if self.stop_event.is_set():
                     break
@@ -175,6 +213,8 @@ class HardwareTelemetry:
             with self.lock:
                 errors.extend(str(n.exception) for n in self.notifiers if n.exception)
                 self.error = '; '.join(errors)
+            if priority is not None:
+                sweep_s = time.monotonic() - started
             period = min(self.poll_period, 0.02) if priority is not None else self.poll_period
             self.stop_event.wait(max(0.005 if priority is not None else 0.0,
                                      period - (time.monotonic() - started)))

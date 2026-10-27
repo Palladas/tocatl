@@ -158,6 +158,9 @@ yet; if can1 stalls, stop, reset can1 and see `docs/motor51-diagnosis-2026-10-26
    position as its reference, and only if the motor is disabled, fault-free and fresh. Arming
    needs it. A rehome, lost or faulted feedback, or a controller fault clears it, and it must
    then be declared again.
+   Each leg card shows **yaw held** or **yaw not declared**. Once every session leg is
+   homed, the button is highlighted until all yaws are declared, and **Arm** is refused until
+   then. Homing a leg clears its yaw reference, so declare after the last homing.
 4. In **Leg motion**, choose **Stand** and select all session legs. Enter:
    - **r:** foot distance out from the yaw axis.
    - **Resting height:** the mounting plane's height above the ground while the body rests.
@@ -182,3 +185,10 @@ yet; if can1 stalls, stop, reset can1 and see `docs/motor51-diagnosis-2026-10-26
 Begin with a low standing height and a short hold. Stopping the motion (stall, Stop or a
 fault) disables the motors and lowers the body under gravity, so keep the body over soft
 blocks.
+
+**Homes stay put during homing (fixed 2026-10-27).** While a pair homes, other motors are
+polled in the background. In Level 4, with 14–16 motors sharing that slot, homed legs' feedback
+aged past 1.5 s, and readiness cleared them as `feedback lost`. As a result, homing any leg
+dropped the earlier ones. The background rotation now covers only the motors readiness checks
+(homed hip/knee and declared yaws), so at most 8 motors share it during a batch, the same as
+Levels 2 and 3.

@@ -1495,6 +1495,9 @@ class HipKneeHoming:
                 if self.cancelled.is_set():
                     raise ValueError('Homing cancelled')
                 self.concurrent_motor_ids = tuple(mid for leg in group for mid in hip_knee_ids(leg))
+                # Background-poll only what readiness checks (homed pitch/knee, declared
+                # yaw), so ready legs stay fresh without starving this group's polling.
+                self.hardware.background_motors = lambda: self.readiness.snapshot()[0].keys()
                 self.hardware.priority_motor = self.concurrent_motor_ids
                 errors = []
                 def home(leg):
@@ -1535,6 +1538,7 @@ class HipKneeHoming:
         finally:
             with self.lock:
                 self.hardware.priority_motor = None
+                self.hardware.background_motors = None
                 self.active = False
 
     def _home_leg(self, leg):

@@ -360,3 +360,51 @@ def test_yaw_reference_is_cleared_with_its_leg_and_on_lost_feedback():
     samples[21].faults = ('Over temperature',)
     readiness.check(hardware)
     assert 21 not in readiness.snapshot()[0] and 22 not in readiness.snapshot()[0]
+
+
+def test_background_polling_scales_with_the_number_of_waiting_motors():
+    from tocatl_lowlevel.hardware import background_per_sweep, select_drivers
+    assert background_per_sweep(8, 0.10, 1.0) == 1    # Level 2/3: unchanged, one per sweep
+    assert background_per_sweep(14, 0.10, 1.0) == 2   # Level 4: 14 waiting motors need two
+    assert background_per_sweep(16, 0.12, 1.0) == 2
+    assert background_per_sweep(16, 0.30, 1.0) == 5
+    assert background_per_sweep(0, 0.10, 1.0) == 0
+    assert background_per_sweep(5, float('nan'), 1.0) == 1  # before the first measured sweep
+    assert background_per_sweep(3, 5.0, 1.0) == 3          # never more than exist
+    drivers = [NS(motor_id=m) for m in (11, 12, 13, 21, 22, 23)]
+    chosen, index = select_drivers(drivers, (12, 13), 0, 2)
+    assert [d.motor_id for d in chosen] == [12, 13, 11, 21] and index == 2
+    chosen, index = select_drivers(drivers, (12, 13), index, 2)
+    assert [d.motor_id for d in chosen] == [12, 13, 22, 23] and index == 4
+    chosen, _ = select_drivers(drivers, (12, 13), index, 2)
+    assert [d.motor_id for d in chosen] == [12, 13, 11, 21]  # rotation wraps
+    assert [d.motor_id for d in select_drivers(drivers, None, 7, 2)[0]] == [11, 12, 13, 21, 22, 23]
+
+
+
+def test_background_rotation_can_be_limited_to_ready_motors():
+    from tocatl_lowlevel.hardware import select_drivers
+    drivers = [NS(motor_id=m) for m in (11, 12, 13, 21, 22, 23, 31, 32, 33)]
+    chosen, index = select_drivers(drivers, (32, 33), 0, 1, background_ids={12, 13})
+    assert [d.motor_id for d in chosen] == [32, 33, 12]
+    chosen, index = select_drivers(drivers, (32, 33), index, 1, background_ids={12, 13})
+    assert [d.motor_id for d in chosen] == [32, 33, 13]  # 11, 21-23 (not ready) wait for homing to end
+    assert [d.motor_id for d in select_drivers(drivers, (32, 33), 0, 1, background_ids=set())[0]] == [32, 33]
+
+
+
+def test_leg_scope_reports_a_declared_yaw():
+    pytest.importorskip('rclpy')
+    from tocatl_interfaces.msg import RobotState
+    from tocatl_lowlevel.motor_controller import MotorController
+    readiness, hardware, samples = yaw_setup()
+    node = NS(homing=NS(status=lambda: (False, False, 'idle')), motion=None, readiness=readiness, hardware=hardware)
+
+    def scopes():
+        state = RobotState()
+        state.safety_state = RobotState.DISARMED
+        MotorController.add_leg_status(node, state)
+        return {leg.leg_id: leg.scope for leg in state.legs}
+    assert scopes()[1] == 'pitch_knee'
+    readiness.declare_yaw(hardware, [11])
+    assert scopes()[1] == 'pitch_knee_yaw' and scopes()[2] == 'pitch_knee'

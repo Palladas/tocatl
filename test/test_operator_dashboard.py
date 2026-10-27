@@ -279,6 +279,20 @@ class ControllerTests(ControllerBase):
         with self.assertRaisesRegex(ValueError, 'must be disabled'):
             self.dash.declare_yaw({})
 
+    def test_level4_arm_needs_every_session_yaw_declared(self):
+        self.start(profile='standing', legs=[1, 2], motion_confirmed=True, standing_confirmed=True)
+        with patch.object(d.subprocess, 'Popen', return_value=FakeProc()):
+            self.dash.motion(dict(legs=[1, 2], kind='nudge', motion_confirmed=True), dry_run=False)
+        legs = [dict(leg=1, yaw_declared=True), dict(leg=2, yaw_declared=False)]
+        self.bridge.snapshot.return_value = (dict(legs=legs, motors=[]), 0.02)
+        self.bridge.call.reset_mock()
+        with self.assertRaisesRegex(ValueError, r'legs \[2\] have none'):
+            self.dash.arm(dict(arm_confirmed=True))
+        self.bridge.call.assert_not_called()
+        legs[1]['yaw_declared'] = True
+        self.dash.arm(dict(arm_confirmed=True))
+        self.assertEqual(self.bridge.call.call_args.kwargs, {'data': True})
+
     def test_level3_needs_motion_confirmation_and_allows_homing(self):
         with patch.object(d.subprocess, 'Popen') as popen, self.assertRaises(ValueError):
             self.dash.start_controller(dict(profile='motion', legs=[1], checklist_confirmed=True))

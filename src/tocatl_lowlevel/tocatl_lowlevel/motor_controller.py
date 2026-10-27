@@ -254,7 +254,8 @@ class MotorController(Node):
         homes, _ = self.readiness.snapshot()
         for leg_id in range(1, 7):
             leg = LegState()
-            leg.leg_id, leg.scope = leg_id, 'pitch_knee'
+            # 'pitch_knee_yaw' once this session also holds a declared yaw reference for the leg.
+            leg.leg_id, leg.scope = leg_id, 'pitch_knee_yaw' if leg_id * 10 + 1 in homes else 'pitch_knee'
             leg.motor_ids = list(hip_knee_ids(leg_id))
             leg.homed = all(mid in homes for mid in leg.motor_ids)
             leg.ready = bool(ready and leg.homed)

@@ -79,6 +79,12 @@ def hold_violations(session_map, raw_start, legs, offsets: EnvelopeOffsets):
     return problems
 
 
+def undeclared_yaw_legs(state: dict, yaw_ids):
+    """Legs whose actuated yaw has no declared reference this session (scope from robot_state)."""
+    scopes = {leg['leg']: leg.get('scope', '') for leg in state['legs']}
+    return sorted(mid // 10 for mid in yaw_ids if scopes.get(mid // 10) != 'pitch_knee_yaw')
+
+
 def session_inputs(state: dict, legs, joint_map, yaw_ids=()):
     """References and measured start pose from a robot_state snapshot; raises if not ready.
     Actuated yaw motors (``yaw_ids``) are only held, so only their measured position is read."""
@@ -362,6 +368,9 @@ def main(argv=None):
         hold = {mid: raw_start[mid] for leg in held for mid in motor_ids(leg)[1:]}
         hold.update({mid: raw_start[mid] for mid in yaw_ids})
         trajectory.violations += hold_violations(session_map, raw_start, held, limits.offsets)
+        missing_yaw = undeclared_yaw_legs(state, yaw_ids)
+        if missing_yaw:  # every command would be rejected: say so instead of streaming them
+            trajectory.violations.append(f'Declare yaw references first: legs {missing_yaw} have none this session')
         report = trajectory.summary(limits.offsets, session_map)
         report['held_legs'] = held
         report['held_yaw'] = yaw_ids
@@ -373,6 +382,14 @@ def main(argv=None):
         if args.dry_run:
             print('Dry run: nothing published.', flush=True)
             return 0
+        # Planning (a stand plan takes ~1.5 s) outlasts the 0.5 s staleness limit, and the
+        # snapshot used for it is older still: wait for a new robot_state before streaming
+        # (2026-10-27 16:21-16:22 both stand runs stopped at once with 'robot_state stale').
+        planned_at = time.monotonic()
+        while latest['at'] <= planned_at and time.monotonic() < planned_at + 1.0:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        if latest['at'] <= planned_at:
+            raise ValueError('robot_state stopped arriving while planning; is the controller running?')
         streamer = Streamer(trajectory, args.kp, args.kd, hold=hold, lead=lead)
         print(f'Target lead {lead:.3f} rad (controller max_position_step_rad {limits.max_step}).', flush=True)
         streaming = True
@@ -382,7 +399,8 @@ def main(argv=None):
         last_phase, last_report = streamer.phase, 0.0
         while True:
             tick = time.monotonic()
-            rclpy.spin_once(node, timeout_sec=0.0)
+            for _ in range(10):  # drain queued robot_state (50 Hz) so the newest one is used
+                rclpy.spin_once(node, timeout_sec=0.0)
             msg = latest.get('msg')
             measured = ({m.motor_id: m.position_rad for m in msg.motors
                          if m.telemetry_fresh and math.isfinite(m.position_rad)} if msg else {})
@@ -427,7 +445,7 @@ def main(argv=None):
 def _state_dict(msg):
     return dict(safety_state=msg.safety_state,
                 legs=[dict(leg=l.leg_id, homed=l.homed, ready=l.ready, motor_ids=list(l.motor_ids),
-                           home_positions=list(l.home_positions_rad)) for l in msg.legs],
+                           home_positions=list(l.home_positions_rad), scope=l.scope) for l in msg.legs],
                 motors=[dict(motor_id=m.motor_id, fresh=m.telemetry_fresh, faults=list(m.faults),
                              position=m.position_rad) for m in msg.motors])
 

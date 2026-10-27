@@ -361,3 +361,13 @@ def test_stand_refuses_loads_beyond_the_cap_and_missing_mass(geometry, joint_map
     for bad in (dict(mass_kg=0.0), dict(stand_height_m=0.05), dict(clearance_m=0.0)):
         with pytest.raises(ValueError):
             stand_motion(**bad).validate()
+
+
+def test_undeclared_yaw_legs_from_robot_state_scope():
+    """2026-10-27: 660 Level 4 commands were rejected because no yaw had been declared."""
+    from tocatl_kinematics.player import undeclared_yaw_legs
+    state = dict(legs=[dict(leg=1, scope='pitch_knee_yaw'), dict(leg=2, scope='pitch_knee'),
+                       dict(leg=5, scope='pitch_knee_yaw')])
+    assert undeclared_yaw_legs(state, [11, 21, 51]) == [2]
+    assert undeclared_yaw_legs(state, []) == []
+    assert undeclared_yaw_legs(dict(legs=[dict(leg=3)]), [31]) == [3]  # older state without scope
