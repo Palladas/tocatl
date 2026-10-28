@@ -371,3 +371,29 @@ def test_undeclared_yaw_legs_from_robot_state_scope():
     assert undeclared_yaw_legs(state, [11, 21, 51]) == [2]
     assert undeclared_yaw_legs(state, []) == []
     assert undeclared_yaw_legs(dict(legs=[dict(leg=3)]), [31]) == [3]  # older state without scope
+
+
+def test_playback_rate_eases_instead_of_pausing(geometry, session):
+    """2026-10-27: pause/advance with velocity feedforward dropping to 0 made motion jerky."""
+    from tocatl_kinematics.player import SLOW_FROM
+    clock = Clock()
+    trajectory = plan_plane_motion(geometry, session, start_pose(session, (1,)),
+                                   PlaneMotion(kind='pose', max_speed_rad_s=0.5))
+    s = Streamer(trajectory, 30.0, 2.0, clock=clock, lead=0.4)
+    assert s.playback_rate(0.0) == 1.0 and s.playback_rate(0.4 * SLOW_FROM) == 1.0
+    assert s.playback_rate(0.3) == pytest.approx(0.5) and s.playback_rate(0.4) == 0.0
+    measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
+    s.step('ARMED', 0.02, measured)
+    rates, velocities = [], []
+    for _ in range(300):
+        clock.t += 0.05
+        out = s.step('ARMED', 0.02, dict(measured))
+        assert out is not None, s.reason
+        rates.append(s.rate)
+        velocities.append(dict((m, v) for m, _, v in out)[12])
+        for mid, position, _ in out:
+            measured[mid] += (0.04 if mid == 12 else 1.0) * (position - measured[mid])  # a slow hip
+    steps = np.abs(np.diff(rates))
+    assert min(rates) < 0.9 < max(rates)   # it did slow down
+    assert steps.max() < 0.3                # gradually, never a 0 <-> 1 toggle
+    assert all(abs(v) <= np.abs(trajectory.raw_velocity[12]).max() + 1e-9 for v in velocities)

@@ -146,6 +146,9 @@ class MotorCommands:
                 raise ValueError(f'Motor {target.motor_id} position step exceeds max_position_step_rad')
 
 
+EXTRAPOLATE_MAX_S = 0.15
+
+
 class Disarmed(Exception):
     """An operator disarm noticed partway through a command pass: a normal stop, not a fault."""
 
@@ -221,32 +224,31 @@ class HardwareMotion:
                         by_id = {d.motor_id: d for d in self.hardware.drivers}
                         if not touched and self.torque_limit is not None:
                             self.apply_torque_cap(targets)
-                        with self.hardware.tx_lock:
-                            if not touched:
-                                from CyberGearDriver import RunMode
-                                for target in targets:
-                                    with self.lock:
-                                        if not self.requested or self.quit.is_set():
-                                            raise Disarmed('Operator disarmed')
-                                    if self.commands.snapshot()[1] >= self.commands.timeout:
-                                        raise ValueError('Motor command watchdog expired')
-                                    driver = by_id[target.motor_id]
+                        first = not touched
+                        if first:
+                            from CyberGearDriver import RunMode
+                        for target in targets:
+                            # Checks between writes. The (fair) CAN lock is taken per motor, so
+                            # telemetry polling interleaves with a long pass instead of waiting
+                            # for all of it (18 motors take ~180 ms).
+                            with self.lock:
+                                if not self.requested or self.quit.is_set():
+                                    raise Disarmed('Operator disarmed')
+                            age = self.commands.snapshot()[1]
+                            if age >= self.commands.timeout:
+                                raise ValueError('Motor command watchdog expired')
+                            position = self.extrapolate(target, age)
+                            driver = by_id[target.motor_id]
+                            with self.hardware.tx_lock:
+                                if first:
                                     touched.append(driver)
                                     driver.mode(RunMode.OPERATION_CONTROL)
-                                    driver.control(target.position_rad, target.velocity_rad_s,
+                                    driver.control(position, target.velocity_rad_s,
                                                    target.torque_nm, target.kp, target.kd)
                                     driver.enable()
-                            else:
-                                for target in targets:
-                                    # Check timeout/disable between driver writes, too.
-                                    with self.lock:
-                                        if not self.requested:
-                                            raise Disarmed('Operator disarmed')
-                                    if self.commands.snapshot()[1] >= self.commands.timeout:
-                                        raise ValueError('Motor command watchdog expired')
-                                    by_id[target.motor_id].control(
-                                        target.position_rad, target.velocity_rad_s,
-                                        target.torque_nm, target.kp, target.kd)
+                                else:
+                                    driver.control(position, target.velocity_rad_s,
+                                                   target.torque_nm, target.kp, target.kd)
                         with self.lock:
                             self.armed = True
                             self.reason = 'Executing motor-space targets'
@@ -314,6 +316,19 @@ class HardwareMotion:
                 self.faulted = True
                 self.fault_count += 1
         return remaining
+
+    def extrapolate(self, target, age):
+        """Advance a target along its own velocity by the command's age (capped at
+        EXTRAPOLATE_MAX_S) and keep it inside the envelope, so a motor written late in a long
+        pass gets where the plan is now rather than where it was when the batch arrived."""
+        if not target.velocity_rad_s or age is None or age <= 0:
+            return target.position_rad
+        try:
+            low, high = self.commands.envelope(target.motor_id)
+        except (ValueError, KeyError):
+            return target.position_rad
+        position = target.position_rad + target.velocity_rad_s * min(age, EXTRAPOLATE_MAX_S)
+        return min(high, max(low, position))
 
     def apply_torque_cap(self, targets):
         for target in targets:

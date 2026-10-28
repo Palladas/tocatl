@@ -30,6 +30,42 @@ class Sample:
 # (0.25 s guard), so the homing coordinator narrows the rotation to the motors readiness
 # checks (``background_motors``), and more than one per sweep is used only if needed.
 BACKGROUND_REFRESH_FRACTION = 2 / 3
+# Outside homing, a motor whose state arrived within this long (every control command is
+# answered with a state frame) only needs its fault status polled. Sweeps are paced to at
+# least SWEEP_S so motion commands keep most of the bus; fault status still refreshes
+# well inside stale_after (2026-10-27: 18-motor stands starved fault-status polling).
+STATE_REPLY_FRESH_S = 0.3
+SWEEP_S = 0.6
+
+
+class FairLock:
+    """First-come, first-served lock. A plain Lock lets a thread that releases and
+    immediately re-acquires (a motion pass taken one motor at a time) starve the
+    telemetry poll waiting for it. Not reentrant, like threading.Lock."""
+
+    def __init__(self):
+        self._cond = threading.Condition(threading.Lock())
+        self._next = 0
+        self._serving = 0
+
+    def acquire(self):
+        with self._cond:
+            ticket = self._next
+            self._next += 1
+            while ticket != self._serving:
+                self._cond.wait()
+        return True
+
+    def release(self):
+        with self._cond:
+            self._serving += 1
+            self._cond.notify_all()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
 
 
 def background_per_sweep(background_count, sweep_s, refresh_s):
@@ -102,7 +138,7 @@ class HardwareTelemetry:
         self.poll_period = poll_period
         self.samples = {m.motor_id: Sample() for m in MOTORS}
         self.lock = threading.Lock()
-        self.tx_lock = threading.Lock()
+        self.tx_lock = FairLock()
         self.stop_event = threading.Event()
         self.buses = []
         self.notifiers = []
@@ -201,9 +237,14 @@ class HardwareTelemetry:
             for driver in drivers:
                 if self.stop_event.is_set():
                     break
+                with self.lock:
+                    received = self.samples[getattr(driver, 'logical_motor_id', driver.motor_id)].received
+                state_fresh = (priority is None and received is not None and
+                               time.monotonic() - received < STATE_REPLY_FRESH_S)
                 try:
                     with self.tx_lock:
-                        driver.request_motor_state()
+                        if not state_fresh:
+                            driver.request_motor_state()
                         if hasattr(driver, 'request_parameter'):
                             driver.request_parameter('faultSta')
                         else:
@@ -215,7 +256,7 @@ class HardwareTelemetry:
                 self.error = '; '.join(errors)
             if priority is not None:
                 sweep_s = time.monotonic() - started
-            period = min(self.poll_period, 0.02) if priority is not None else self.poll_period
+            period = min(self.poll_period, 0.02) if priority is not None else max(self.poll_period, SWEEP_S)
             self.stop_event.wait(max(0.005 if priority is not None else 0.0,
                                      period - (time.monotonic() - started)))
 

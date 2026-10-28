@@ -194,3 +194,24 @@ aged past 1.5 s, and readiness cleared them as `feedback lost`. As a result, hom
 dropped the earlier ones. The background rotation now covers only the motors readiness checks
 (homed hip/knee and declared yaws), so at most 8 motors share it during a batch, the same as
 Levels 2 and 3.
+
+## Motion smoothness and the CAN budget (2026-10-27)
+
+Every CAN message costs the driver 10 ms, and one lock covers both buses. In Level 4
+(18 motors), a command pass takes about 180 ms, so each motor gets a new setpoint only about
+4–5 times a second. Fault-status polling was starved, which likely faulted the 17:06 stand.
+
+Changes:
+- **Fair lock.** The CAN lock is now first-come, first-served, and the motion pass takes it
+  per motor, so telemetry polling interleaves with a pass instead of waiting it out.
+- **Lighter polling.** Outside homing, a motor whose state arrived in the last 0.3 s gets only
+  its fault status polled, because command replies carry state. Sweeps are paced to at least
+  0.6 s so commands keep most of the bus.
+- **Extrapolation.** The controller advances each target by its velocity × the command's age,
+  up to 0.15 s and kept inside the envelope.
+- **Smooth playback.** The player's rate eases from full speed to zero as lag goes from half
+  the lead limit to the full lead limit. Velocity feedforward is scaled by that rate instead of
+  dropping to 0. Progress lines show the current speed percentage.
+
+Homing polling is unchanged. The remaining big lever is the driver's 10 ms pause and the
+10-frame TX queue, which need a staged test because of can1's ENOBUFS history.

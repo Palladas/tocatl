@@ -448,3 +448,114 @@ def test_motion_faults_are_logged_once_each():
     MotorController.log_motion_fault(node)
     MotorController.log_motion_fault(node)
     assert logged == ['Motion fault: Motor 42 telemetry/fault status unavailable or stale']
+
+
+def test_fair_lock_serves_waiters_in_arrival_order():
+    from tocatl_lowlevel.hardware import FairLock
+    lock, order = FairLock(), []
+    lock.acquire()
+    threads = []
+    for name in ('poll', 'motion', 'homing'):
+        t = threading.Thread(target=lambda n=name: (lock.acquire(), order.append(n), lock.release()))
+        t.start()
+        threads.append(t)
+        time.sleep(0.05)  # fix the arrival order
+    lock.release()
+    for t in threads:
+        t.join(1)
+    assert order == ['poll', 'motion', 'homing']
+    with lock:  # usable as a context manager
+        pass
+
+
+def test_motion_pass_takes_the_can_lock_per_motor_and_extrapolates():
+    """A long pass no longer holds the lock throughout, so telemetry can interleave."""
+    bus = FakeBus()
+    acquisitions = []
+
+    class CountingLock:
+        def __init__(self):
+            self.inner = threading.Lock()
+        def __enter__(self):
+            self.inner.acquire()
+            acquisitions.append(threading.current_thread().name)
+        def __exit__(self, *exc):
+            self.inner.release()
+    bus.tx_lock = CountingLock()
+    motion, c = armed_motion(bus)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        first_pass = [e for e in bus.events if e[1] in ('mode', 'control', 'enable')][:6]
+        assert [e[0] for e in first_pass] == [12, 12, 12, 13, 13, 13]
+        assert len(acquisitions) >= 2  # at least one acquisition per motor
+    finally:
+        motion.close()
+
+
+def test_extrapolation_follows_velocity_capped_and_clamped():
+    from tocatl_lowlevel.motor_commands import EXTRAPOLATE_MAX_S, Target
+    motion = HardwareMotion(FakeBus(), commands())
+    try:
+        target = Target(12, HOMES[12] + 0.5, 1.0, 0.0, 30.0, 2.0)
+        assert motion.extrapolate(target, 0.05) == pytest.approx(HOMES[12] + 0.55)
+        assert motion.extrapolate(target, 1.0) == pytest.approx(HOMES[12] + 0.5 + EXTRAPOLATE_MAX_S)
+        assert motion.extrapolate(Target(12, HOMES[12] + 0.5, 0.0, 0.0, 30.0, 2.0), 0.1) == HOMES[12] + 0.5
+        edge = Target(12, HOMES[12] + 1.59, 1.0, 0.0, 30.0, 2.0)
+        assert motion.extrapolate(edge, 0.1) == pytest.approx(HOMES[12] + 1.6)  # stays inside the envelope
+    finally:
+        motion.close()
+
+
+def telemetry_with_samples(received_ages, priority=None):
+    """HardwareTelemetry over fake CAN; returns (hardware, calls) after one sweep."""
+    from tocatl_lowlevel.hardware import HardwareTelemetry
+    calls, swept = [], threading.Event()
+
+    class Bus:
+        def shutdown(self): pass
+
+    class Notifier:
+        exception = None
+        def __init__(self, *args): pass
+        def stop(self): pass
+
+    class Driver:
+        def __init__(self, motor_id, send_message):
+            self.motor_id = motor_id
+        def request_motor_state(self):
+            calls.append(('state', self.motor_id))
+        def request_parameter(self, name):
+            calls.append((name, self.motor_id))
+            if self.motor_id == 13:
+                swept.set()
+    import tocatl_lowlevel.hardware as h
+    original = h.HardwareTelemetry.poll
+    started = threading.Event()
+
+    def delayed_poll(self):  # set sample ages before the first sweep
+        started.wait(1)
+        original(self)
+    h.HardwareTelemetry.poll = delayed_poll
+    try:
+        hw = HardwareTelemetry(lambda: None, {'can1': 'unused'}, motor_ids=[12, 13],
+                               can_module=NS(interface=NS(Bus=lambda **kw: Bus()), Notifier=Notifier),
+                               driver_module=NS(CyberGearMotor=Driver))
+    finally:
+        h.HardwareTelemetry.poll = original
+    now = time.monotonic()
+    for mid, age in received_ages.items():
+        hw.samples[mid].received = None if age is None else now - age
+    hw.priority_motor = priority
+    started.set()
+    assert swept.wait(2)
+    hw.close()
+    return calls
+
+
+def test_poll_skips_state_requests_that_command_replies_already_cover():
+    calls = telemetry_with_samples({12: 0.05, 13: None})
+    assert ('state', 12) not in calls and ('faultSta', 12) in calls  # replied to a command just now
+    assert ('state', 13) in calls and ('faultSta', 13) in calls      # no recent state
+    homing = telemetry_with_samples({12: 0.05, 13: 0.05}, priority=(12, 13))
+    assert ('state', 12) in homing and ('state', 13) in homing      # homing keeps full polling

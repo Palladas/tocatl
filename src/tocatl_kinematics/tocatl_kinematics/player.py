@@ -41,6 +41,11 @@ END_HOLD_S = 2.0
 LEAD_RAD = 0.08         # used when the controller's max_position_step_rad can't be read
 LEAD_FRACTION = 0.8     # of max_position_step_rad, leaving room for feedback age
 STALL_S = 3.0
+# Playback rate eases from full speed at SLOW_FROM x lead of lag to zero at the full lead,
+# instead of pausing and resuming (which jolted, 2026-10-27). Below STALL_RATE it counts
+# as stalled.
+SLOW_FROM = 0.5
+STALL_RATE = 0.05
 
 
 @dataclass(frozen=True)
@@ -116,11 +121,12 @@ def session_inputs(state: dict, legs, joint_map, yaw_ids=()):
 class Streamer:
     """Pure decision logic for what to publish at each tick; the ROS node only feeds it.
 
-    Playback is lag-aware: plan time advances only while every moving motor would stay
-    within LEAD_RAD of its measured position, so a motor that cannot keep up (torque cap,
-    load, bus latency) slows the motion instead of faulting it. Every sent target is
-    clamped to within LEAD_RAD of the measured position. No progress for STALL_S stops
-    the motion with the lagging motor named.
+    Playback is lag-aware and continuous: plan time advances at a rate that eases from
+    full speed to zero as the worst moving motor's lag goes from SLOW_FROM x lead to the
+    lead, so a motor that cannot keep up (torque cap, load, bus latency) slows the motion
+    smoothly instead of faulting it. Velocity feedforward is scaled by the same rate. Every
+    sent target is clamped to within the lead of the measured position. A rate below
+    STALL_RATE for STALL_S stops the motion with the lagging motor named.
     """
 
     def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None, lead=LEAD_RAD):
@@ -142,6 +148,7 @@ class Streamer:
         self.last_advance = None
         self.finished_at = None
         self.max_lag = (None, 0.0)  # (motor_id, rad) seen while playing
+        self.rate = 0.0             # current playback rate (1 = real time)
 
     def index_at(self, plan_time):
         return min(int(np.searchsorted(self.trajectory.times, plan_time)), len(self.trajectory.times) - 1)
@@ -151,15 +158,22 @@ class Streamer:
                 (float(self.trajectory.raw[mid][index]), float(self.trajectory.raw_velocity[mid][index]))
                 for mid in self.motor_ids}
 
-    def targets(self, index, measured=None, moving=True):
-        """Planned targets at ``index``, clamped to within LEAD_RAD of ``measured``."""
+    def targets(self, index, measured=None, rate=1.0):
+        """Planned targets at ``index``, clamped to within the lead of ``measured``, with
+        velocity feedforward scaled by the playback ``rate``."""
         out = []
         for mid, (position, velocity) in self.planned(index).items():
             actual = (measured or {}).get(mid)
             if actual is not None:
                 position = min(actual + self.lead, max(actual - self.lead, position))
-            out.append((mid, position, velocity if moving else 0.0))
+            out.append((mid, position, velocity * rate))
         return out
+
+    def playback_rate(self, lag):
+        ratio = lag / self.lead
+        if ratio <= SLOW_FROM:
+            return 1.0
+        return max(0.0, (1.0 - ratio) / (1.0 - SLOW_FROM))
 
     def lag(self, index, measured):
         """Largest |planned - measured| over moving motors, as (motor_id, rad)."""
@@ -188,35 +202,36 @@ class Streamer:
             elif now - self.waiting_since > ARM_TIMEOUT_S:
                 return self.stop(f'Not armed within {ARM_TIMEOUT_S:.0f} s')
             else:
-                return self.targets(0, measured, moving=False)
+                return self.targets(0, measured, rate=0.0)
         if safety_state != 'ARMED':
             return self.stop(f'Controller left ARMED ({safety_state}) during motion')
         duration = float(self.trajectory.times[-1])
         dt, self.last_tick = now - self.last_tick, now
-        moving = False
+        self.rate = 0.0
         if self.progress < duration:
-            candidate = min(duration, self.progress + dt)
-            lagging = self.lag(self.index_at(candidate), measured)
-            if lagging[1] <= self.lead:
-                self.progress, self.last_advance, moving = candidate, now, True
+            lagging = self.lag(self.index_at(self.progress), measured)
+            self.rate = self.playback_rate(lagging[1])
+            self.progress = min(duration, self.progress + dt * self.rate)
+            if self.rate >= STALL_RATE:
+                self.last_advance = now
             if lagging[1] > self.max_lag[1] and lagging[1] != float('inf'):
                 self.max_lag = lagging
             if now - self.last_advance > STALL_S:
-                held = self.lag(self.index_at(self.progress), measured)
                 return self.stop(f'Motion stalled for {STALL_S:.0f} s at {100 * self.progress / duration:.0f}%: '
-                                 f'motor {lagging[0]} is {lagging[1]:.3f} rad behind its next target '
-                                 f'({held[1]:.3f} rad behind the current one); it cannot follow at this load')
+                                 f'motor {lagging[0]} is {lagging[1]:.3f} rad behind its target '
+                                 f'(lead limit {self.lead:.3f} rad); it cannot follow at this load')
         elif self.finished_at is None:
             self.finished_at = now
         if self.finished_at is not None and now - self.finished_at >= END_HOLD_S:
             self.phase, self.reason = 'DONE', 'Motion complete'
             return None
-        return self.targets(self.index_at(self.progress), measured, moving)
+        return self.targets(self.index_at(self.progress), measured, self.rate)
 
     def status(self):
         duration = float(self.trajectory.times[-1])
-        return (f'progress {100 * self.progress / duration:.0f}% of {duration:.1f} s plan; '
-                f'max lag so far {self.max_lag[1]:.3f} rad' + (f' (motor {self.max_lag[0]})' if self.max_lag[0] else ''))
+        return (f'progress {100 * self.progress / duration:.0f}% of {duration:.1f} s plan at '
+                f'{100 * self.rate:.0f}% speed; max lag so far {self.max_lag[1]:.3f} rad'
+                + (f' (motor {self.max_lag[0]})' if self.max_lag[0] else ''))
 
     def stop(self, reason):
         self.phase, self.reason = 'STOPPED', reason
