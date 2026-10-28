@@ -17,7 +17,7 @@ from tocatl_kinematics.geometry import RobotGeometry
 from tocatl_kinematics.joint_map import JointMap, motor_ids
 from tocatl_kinematics.leg import KinematicsError, ik, jacobian
 
-KINDS = ('nudge', 'pose', 'circle', 'stand')
+KINDS = ('nudge', 'pose', 'circle', 'wave', 'stand')
 GRAVITY = 9.81
 RATED_TORQUE_NM = 4.0   # CyberGear continuous rating
 CAP_MARGIN = 0.9        # plans may use at most this fraction of the drive torque cap
@@ -41,11 +41,15 @@ class PlaneMotion:
     # negative knee unfolds it: both move away from the compressed stop).
     d_pitch_rad: float = -0.2
     d_knee_rad: float = -0.2
-    # pose / circle: foot target (or circle centre) in the leg plane.
+    # pose / circle / wave: foot target (or circle centre) in the leg plane.
     r_m: float = 0.35
     z_m: float = -0.05
     radius_m: float = 0.03
     loops: int = 1
+    # wave: a circle whose phase lags by phase_deg per leg number, so the motion ripples
+    # around the body (legs are numbered around it; 60 = one ripple per revolution of six
+    # legs, negative reverses the direction).
+    phase_deg: float = 60.0
     # stand: feet go to (r_m, -rest_height_m + clearance_m), touch down at the ground
     # (-rest_height_m: the mounting plane's height above the ground while the body rests),
     # the body rises to stand_height_m, holds, lowers and the legs return. Joint torques
@@ -72,8 +76,10 @@ class PlaneMotion:
             problems.append('hold_s must be in [0, 10]')
         if self.kind == 'nudge' and not (abs(self.d_pitch_rad) <= 0.8 and abs(self.d_knee_rad) <= 0.8):
             problems.append('nudge changes are limited to 0.8 rad per joint')
-        if self.kind == 'circle' and not (0.005 <= self.radius_m <= 0.1 and 1 <= self.loops <= 5):
-            problems.append('circle needs radius 0.005-0.1 m and 1-5 loops')
+        if self.kind in ('circle', 'wave') and not (0.005 <= self.radius_m <= 0.1 and 1 <= self.loops <= 5):
+            problems.append(f'{self.kind} needs radius 0.005-0.1 m and 1-5 loops')
+        if self.kind == 'wave' and not -180 <= self.phase_deg <= 180:
+            problems.append('wave phase_deg must be in [-180, 180]')
         if self.branch not in ('knee_down', 'knee_up'):
             problems.append('branch must be knee_down or knee_up')
         if self.kind == 'stand':
@@ -151,6 +157,10 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
     def to_raw(leg, q):
         return np.array(joint_map.pitch_knee_to_raw(leg, q[0], q[1]))
 
+    def phase(leg):
+        """Circle start angle: 0 for circle, lagging by phase_deg per leg number for wave."""
+        return np.radians(motion.phase_deg * (leg - 1)) if motion.kind == 'wave' else 0.0
+
     # Waypoints / paths per leg, as callables of a 0..1 progress, plus their joint path for timing.
     segments = []  # list of (kind, {leg: path(u) -> (pitch, knee)}, feet loaded)
 
@@ -187,22 +197,23 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
         elif motion.kind == 'pose':
             target = {leg: np.array(plane_ik(geometry, leg, motion.r_m, motion.z_m, motion.branch)) for leg in legs}
         else:
-            target = {leg: np.array(plane_ik(geometry, leg, motion.r_m + motion.radius_m, motion.z_m, motion.branch))
+            target = {leg: np.array(plane_ik(geometry, leg, motion.r_m + motion.radius_m * np.cos(phase(leg)),
+                                             motion.z_m + motion.radius_m * np.sin(phase(leg)), motion.branch))
                       for leg in legs}
     except KinematicsError as error:
         violations.append(f'Unreachable target: {error}')
         target = None
     if target is not None:
         segments.append(('move', {leg: (lambda u, a=start[leg], b=target[leg]: a + _blend(u) * (b - a)) for leg in legs}, False))
-        if motion.kind == 'circle':
+        if motion.kind in ('circle', 'wave'):
             def circle(u, leg):
-                angle = 2 * pi * motion.loops * _blend(u)
+                angle = 2 * pi * motion.loops * _blend(u) + phase(leg)
                 return np.array(plane_ik(geometry, leg, motion.r_m + motion.radius_m * np.cos(angle),
                                          motion.z_m + motion.radius_m * np.sin(angle), motion.branch))
             try:
                 for leg in legs:
                     circle(0.5, leg)
-                segments.append(('circle', {leg: (lambda u, leg=leg: circle(u, leg)) for leg in legs}, False))
+                segments.append((motion.kind, {leg: (lambda u, leg=leg: circle(u, leg)) for leg in legs}, False))
             except KinematicsError as error:
                 violations.append(f'Circle leaves the workspace: {error}')
         segments.append(('hold', {leg: (lambda u, b=target[leg]: b) for leg in legs}, False))

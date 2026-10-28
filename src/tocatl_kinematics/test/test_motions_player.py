@@ -397,3 +397,28 @@ def test_playback_rate_eases_instead_of_pausing(geometry, session):
     assert min(rates) < 0.9 < max(rates)   # it did slow down
     assert steps.max() < 0.3                # gradually, never a 0 <-> 1 toggle
     assert all(abs(v) <= np.abs(trajectory.raw_velocity[12]).max() + 1e-9 for v in velocities)
+
+
+
+def test_wave_lags_each_leg_by_its_phase(geometry, joint_map):
+    """Wave: the same circle per leg, started phase_deg * (leg - 1) later around it."""
+    from tocatl_kinematics.motions import plane_ik
+    homes = {leg * 10 + j: 0.0 for leg in range(1, 7) for j in (2, 3)}
+    session = joint_map.with_references(homes, 'test')
+    start = {leg: session.raw_to_pitch_knee(leg, 0.005, 0.1) for leg in range(1, 7)}
+    motion = PlaneMotion(kind='wave', r_m=0.32, z_m=0.02, radius_m=0.08, loops=2, phase_deg=60,
+                         max_speed_rad_s=1.8)
+    t = plan_plane_motion(geometry, session, start, motion)
+    assert t.ok, t.violations
+    for leg in (1, 2, 4):
+        angle = np.radians(60 * (leg - 1))
+        expected = plane_ik(geometry, leg, 0.32 + 0.08 * np.cos(angle), 0.02 + 0.08 * np.sin(angle), 'knee_down')
+        assert np.abs(t.q[leg] - expected).sum(axis=1).min() < 1e-9  # each leg reaches its own phase point
+    hips = [t.raw[leg * 10 + 2] for leg in (1, 4)]
+    assert np.abs(hips[0] - hips[1]).max() > 0.05     # opposite legs are out of step
+    assert np.allclose(t.q[1][-1], start[1]) and np.allclose(t.q[4][-1], start[4])  # all return home
+    circle = plan_plane_motion(geometry, session, start, PlaneMotion(kind='circle', r_m=0.32, z_m=0.02,
+                                                                    radius_m=0.08, loops=2, max_speed_rad_s=1.8))
+    assert np.allclose(circle.raw[12], circle.raw[42])  # circle stays in sync
+    with pytest.raises(ValueError, match='phase_deg'):
+        PlaneMotion(kind='wave', phase_deg=200).validate()

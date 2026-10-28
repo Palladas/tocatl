@@ -179,3 +179,18 @@ ros2 run tocatl_kinematics tocatl_play --legs 1 --actuated-legs 1,2 --kind nudge
 
 Durations are set so no motor exceeds `--max-speed-rad-s` (default 0.1). For example,
 moving the foot from the folded stop to (r 0.35, z −0.05) takes about 55 s at 0.1 rad/s.
+
+### Wave (2026-10-28)
+
+`--kind wave` is a circle whose phase lags by `--phase-deg` per leg number (default 60°).
+Because the legs are numbered around the body, the circles ripple around the robot. A
+negative phase reverses the ripple's direction. Every leg starts at its own phase point
+and returns to its start pose.
+
+Example: about 20 s on all six legs, feet in the air. Planned peak hip offset is 1.42 rad,
+inside the feet-in-air envelope of 1.6.
+
+```bash
+ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,4,5,6 --kind wave \
+  --r-m 0.32 --z-m 0.02 --radius-m 0.08 --loops 5 --phase-deg 60 --max-speed-rad-s 1.8 --hold-s 1.0 --kp 30 --kd 2
+```

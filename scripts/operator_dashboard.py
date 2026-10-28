@@ -45,10 +45,10 @@ PROFILES = {
                      params=[CONFIG / 'homing-hip-knee.yaml', CONFIG / 'motion-standing.yaml'],
                      homing=True, motion=True, yaw=True),
 }
-MOTION_KINDS = ('nudge', 'pose', 'circle', 'stand')
+MOTION_KINDS = ('nudge', 'pose', 'circle', 'wave', 'stand')
 # Player flags the dashboard may pass, with their types (planner and player validate the values).
 MOTION_FIELDS = {'d_pitch_rad': float, 'd_knee_rad': float, 'r_m': float, 'z_m': float, 'radius_m': float,
-                 'loops': int, 'hold_s': float, 'max_speed_rad_s': float, 'rest_height_m': float,
+                 'loops': int, 'phase_deg': float, 'hold_s': float, 'max_speed_rad_s': float, 'rest_height_m': float,
                  'stand_height_m': float, 'clearance_m': float, 'mass_kg': float, 'kp': float, 'kd': float}
 # Any of these owning a bus makes starting a controller or resetting a link unsafe.
 ROBOT_PROCESSES = ('motor_controller', 'cybergear_telemetry', 'motor_telemetry', 'hold_capture',
