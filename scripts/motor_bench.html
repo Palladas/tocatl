@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TOCATL · Motor bench</title>
+<style>
+:root{color-scheme:dark;--bg:#101619;--panel:#1a2328;--line:#344147;--text:#e8efed;--muted:#a7b6b7;--mint:#a6e6cc;--red:#ffb29f;--amber:#f2cf8a}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}
+button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:9px 14px;background:#28353a;color:var(--text)}
+button:hover:not(:disabled){border-color:var(--mint)}button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--mint);color:#102b21;font-weight:700;border-color:var(--mint)}button.danger{color:var(--red);border-color:#74574e}
+button.stop{background:#7a2b22;border-color:#b5543f;color:#fff;font-weight:800;padding:12px 28px;font-size:17px}
+header{border-bottom:1px solid var(--line);padding:18px 4vw;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+h1{font-size:22px;letter-spacing:.1em;margin:0}h2{font-size:18px;margin:0 0 12px}p{line-height:1.5}
+.muted,small{color:var(--muted)}.badge{border:1px solid var(--line);padding:6px 12px;border-radius:30px;font-size:12px}.badge.ok{border-color:#42604e;color:var(--mint)}.badge.warn{border-color:#7a6338;color:var(--amber)}.badge.bad{border-color:#74574e;color:var(--red)}
+.status{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+main{max-width:1300px;margin:auto;padding:22px 4vw 120px}
+.banner{padding:12px 16px;background:#33291a;border:1px solid #7a6338;color:var(--amber);border-radius:9px;margin-bottom:18px;line-height:1.5}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+.panel{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:12px;margin-bottom:18px}
+.fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.fields label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}
+input,select{background:#0c1113;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;width:100%}
+.check{display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:13px;line-height:1.45}.check input{width:auto;margin-top:3px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:10px}.stat small{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.stat strong{font-size:20px;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:6px 8px;border-bottom:1px solid #26313a;white-space:nowrap}th{color:var(--muted);font-weight:600;font-size:12px}td:first-child,th:first-child{text-align:left}
+td input{width:90px;padding:5px 7px}.tablewrap{overflow-x:auto}
+.good{color:var(--mint)}.bad{color:var(--red)}.warn{color:var(--amber)}
+#error{color:var(--red);min-height:1.2em;margin:0 0 10px;font-weight:600}
+footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1px solid var(--line);padding:10px 4vw;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}footer p{margin:0;font-size:13px;color:var(--muted)}
+@media(max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.fields{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}header,main{padding-left:16px;padding-right:16px}footer{padding:10px 16px}.panel{padding:16px}}
+</style></head><body>
+<header><div><h1>TOCATL</h1><div class="muted">Motor bench · single CyberGear, independent of the robot</div></div>
+<div class="status"><span class="badge" id="connBadge">Connecting</span><span class="badge" id="busBadge">Bus closed</span><span class="badge" id="motorBadge">No motor</span></div></header>
+<main>
+<div class="banner"><strong>Before opening a bus:</strong> motor clamped, end effector resting on the scale, power cutoff in reach, fused harness OK,
+no robot controller running (the bench refuses otherwise). If the robot's motors share this bus, keep them unpowered or make sure the test motor's ID differs.
+The motor keeps its last command if this server dies: the power cutoff is the real stop.</div>
+<p id="error" role="alert"></p>
+<div class="grid">
+<section class="panel"><h2>1 · Bus and CAN ID</h2>
+<div class="fields"><label>CAN bus<select id="bus"><option>can0</option><option>can1</option></select></label>
+<label>Link<input id="link" readonly></label><label>Motor ID<input id="motorId" type="number" min="1" max="127" value="127"></label></div>
+<div class="actions"><button class="primary" id="openBtn">Open bus</button><button id="closeBtn">Close bus</button>
+<button id="scanBtn">Scan for motors</button><button class="primary" id="selectBtn">Use this ID</button></div>
+<label class="check"><input type="checkbox" id="robotAck">This ID is a robot motor ID (11–63). The robot motors on this bus are unpowered or disconnected.</label>
+<div class="tablewrap"><table id="scanTable" hidden><thead><tr><th>ID</th><th>MCU UID</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
+<small>Scan asks IDs 1–127 for their device ID (read-only). A new CyberGear ships as ID 127. The bench never changes IDs or zeros.</small>
+</section>
+<section class="panel"><h2>Live telemetry</h2>
+<div class="stats">
+<div class="stat"><small>Position (rel)</small><strong id="pos">—</strong></div>
+<div class="stat"><small>Velocity</small><strong id="vel">—</strong></div>
+<div class="stat"><small>Torque (reported)</small><strong id="tq">—</strong></div>
+<div class="stat"><small>Current iq</small><strong id="iq">—</strong></div>
+<div class="stat"><small>Temperature</small><strong id="temp">—</strong></div>
+<div class="stat"><small>Bus voltage</small><strong id="vbus">—</strong></div>
+<div class="stat"><small>Drive torque limit</small><strong id="lim">—</strong></div>
+<div class="stat"><small>Feedback age</small><strong id="age">—</strong></div></div>
+<p class="muted" id="faultLine">Faults: —</p>
+<div class="actions"><button id="refBtn">Set position reference here</button><button class="danger" id="clearBtn">Clear motor faults</button></div>
+<small>The reference is host-side only (nothing is written to the motor).</small>
+</section></div>
+
+<section class="panel"><h2>2 · Rotation control</h2>
+<div class="fields"><label>Speed (rad/s, ≤10)<input id="jSpeed" type="number" value="1" step="0.1" min="0.05" max="10"></label>
+<label>kp (≤100)<input id="jKp" type="number" value="10" step="1" min="0.5" max="100"></label>
+<label>kd (≤5)<input id="jKd" type="number" value="1" step="0.1" min="0" max="5"></label>
+<label>Torque cap (Nm, ≤12)<input id="jCap" type="number" value="2" step="0.5" min="0.1" max="12"></label>
+<label>Target (deg from reference)<input id="jTarget" type="number" value="0" step="5"></label>
+<label>Spin speed (rad/s, ±10)<input id="jSpin" type="number" value="1" step="0.5" min="-10" max="10"></label></div>
+<div class="actions"><button data-delta="-90">−90°</button><button data-delta="-10">−10°</button><button data-delta="-1">−1°</button>
+<button data-delta="1">+1°</button><button data-delta="10">+10°</button><button data-delta="90">+90°</button>
+<button class="primary" id="goBtn">Go to target</button><button id="spinBtn">Spin</button></div>
+<small>Enables in operation control with the cap written to the drive and read back. Moves ramp at the set speed. Use it to bring the end effector onto the scale, then Stop.</small>
+</section>
+
+<section class="panel"><h2>3 · Maximum torque test (blocked output on the scale)</h2>
+<div class="fields">
+<label>Lever arm r (m, axis → contact)<input id="tLever" type="number" value="0.10" step="0.005" min="0.005" max="1"></label>
+<label>Press direction<select id="tDir"><option value="1">+ torque</option><option value="-1">− torque</option></select></label>
+<label>Torque steps (Nm, comma list)<input id="tSteps" value="1,2,3,4,5,6,7,8,9,10,11,12"></label>
+<label>Hold per step (s, ≤10)<input id="tHold" type="number" value="3" step="0.5" min="0.5" max="10"></label>
+<label>Rest between steps (s)<input id="tRest" type="number" value="5" step="1" min="0" max="120"></label>
+<label>Ramp (Nm/s)<input id="tRamp" type="number" value="4" step="0.5" min="0.5" max="20"></label>
+<label>Damping kd<input id="tKd" type="number" value="0.5" step="0.1" min="0" max="5"></label>
+<label>Travel guard (deg)<input id="tTravel" type="number" value="20" step="1" min="1" max="90"></label>
+<label>Speed guard (rad/s)<input id="tSpeed" type="number" value="1" step="0.1" min="0.2" max="5"></label>
+<label>Temperature limit (°C, ≤60)<input id="tTemp" type="number" value="45" step="1" min="30" max="60"></label>
+<label>Scale zero (kg, effector resting, motor off)<input id="tZero" type="number" value="0" step="0.001"></label></div>
+<label class="check"><input type="checkbox" id="tWait">Wait for <em>Next</em> after each step (time to write down the scale reading)</label>
+<div class="actions"><button id="touchBtn">Direction check (0.3 Nm, 2 s)</button><button class="primary" id="testBtn">Start torque sweep</button><button id="nextBtn" hidden>Next step</button></div>
+<p class="muted" id="testLine">Torque is commanded with kp 0 (no position loop), so the scale takes the full output. The test stops if the output moves more than the travel guard or turns faster than the speed guard (end effector slipped), on any fault, on the temperature limit, or if this page stops polling.</p>
+<div class="tablewrap"><table><thead><tr><th>Step</th><th>Commanded</th><th>Reported</th><th>Peak rep.</th><th>iq</th><th>Nm/A</th><th>Scale (kg)</th><th>Measured</th><th>Meas./cmd</th><th>Max °C</th><th>Travel</th></tr></thead><tbody id="results"></tbody></table></div>
+<div class="actions"><button id="csvBtn">Download CSV</button></div>
+<small id="runDir"></small>
+</section>
+</main>
+<footer><p id="message">—</p><button class="stop" id="stopBtn">STOP MOTOR</button></footer>
+<script>
+const TOKEN='__TOKEN__';const $=id=>document.getElementById(id);let S=null;
+async function post(path,body={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':TOKEN},body:JSON.stringify(body)});
+ const j=await r.json();if(!r.ok){$('error').textContent=j.error||'Request failed';throw new Error(j.error)}$('error').textContent='';return j.result}
+const act=(path,body)=>()=>post(path,typeof body==='function'?body():body).then(refresh).catch(()=>{});
+const f=(v,d=2,u='')=>v==null?'—':Number(v).toFixed(d)+u;
+function jog(){return{speed:+$('jSpeed').value,kp:+$('jKp').value,kd:+$('jKd').value,torque_limit:+$('jCap').value}}
+function test(steps){return{steps,direction:+$('tDir').value,lever_m:+$('tLever').value,hold_s:steps?.length===1&&steps[0]===0.3?2:+$('tHold').value,
+ rest_s:+$('tRest').value,ramp_nm_s:+$('tRamp').value,kd:+$('tKd').value,travel_guard_deg:+$('tTravel').value,speed_guard:+$('tSpeed').value,
+ temperature_limit:+$('tTemp').value,wait_next:$('tWait').checked}}
+$('openBtn').onclick=act('/open',()=>({bus:$('bus').value}));$('closeBtn').onclick=act('/close');
+$('scanBtn').onclick=()=>post('/scan').then(rows=>{const t=$('scanTable');t.hidden=false;const b=t.tBodies[0];b.innerHTML='';
+ if(!rows.length){b.innerHTML='<tr><td colspan="4" class="muted">No replies</td></tr>'}
+ for(const r of rows){const tr=b.insertRow();tr.innerHTML=`<td>${r.motor_id}</td><td>${r.uid||'—'}</td><td class="${r.conflict?'bad':r.robot_id?'warn':'good'}">${r.conflict?'ID conflict: two motors':r.robot_id?'robot motor ID':'not a robot ID'}</td><td><button>Use</button></td>`;
+  tr.querySelector('button').onclick=()=>{$('motorId').value=r.motor_id;$('selectBtn').click()}}refresh()}).catch(()=>{});
+$('selectBtn').onclick=act('/select',()=>({motor_id:+$('motorId').value,robot_ack:$('robotAck').checked}));
+$('stopBtn').onclick=act('/stop');$('clearBtn').onclick=act('/clear_faults');$('refBtn').onclick=act('/reference');
+for(const b of document.querySelectorAll('[data-delta]'))b.onclick=act('/rotate',()=>({...jog(),delta_deg:+b.dataset.delta}));
+$('goBtn').onclick=act('/rotate',()=>({...jog(),target_deg:+$('jTarget').value}));
+$('spinBtn').onclick=act('/spin',()=>({...jog(),velocity:+$('jSpin').value}));
+$('touchBtn').onclick=act('/torque_test',()=>test([0.3]));
+$('testBtn').onclick=()=>{const steps=$('tSteps').value.split(',').map(s=>+s.trim()).filter(s=>s>0);
+ if(!steps.length)return void($('error').textContent='Enter torque steps');
+ if(Math.max(...steps)>4&&!confirm(`Steps go to ${Math.max(...steps)} Nm, above the 4 Nm continuous rating. Hold ${$('tHold').value} s each. Continue?`))return;
+ act('/torque_test',()=>test(steps))()};
+$('nextBtn').onclick=act('/next');
+$('csvBtn').onclick=()=>{if(!S?.results?.length)return;const keys=['step','commanded_nm','reported_nm','peak_reported_nm','iq_a','scale_kg','zero_kg','lever_m','measured_nm','max_temperature_c','travel_rad','hold_s','direction','unix'];
+ const csv=[keys.join(',')].concat(S.results.map(r=>keys.map(k=>r[k]??'').join(','))).join('\n');
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`motor-${S.motor_id}-torque.csv`;a.click()};
+let editing=false;
+function renderResults(){if(editing)return;const b=$('results');b.innerHTML='';
+ for(const r of S.results||[]){const tr=b.insertRow();const kt=r.iq_a?r.reported_nm/r.iq_a:null;const m=r.measured_nm;
+  tr.innerHTML=`<td>${r.step+1}</td><td>${f(r.commanded_nm,2)}</td><td>${f(r.reported_nm,2)}</td><td>${f(r.peak_reported_nm,2)}</td><td>${f(r.iq_a,2,' A')}</td><td>${f(kt,3)}</td>
+  <td><input type="number" step="0.001" value="${r.scale_kg??''}"></td><td>${f(m,2,' Nm')}</td><td class="${m==null?'':m/r.commanded_nm<0.85?'warn':'good'}">${m==null?'—':(100*m/r.commanded_nm).toFixed(0)+'%'}</td><td>${f(r.max_temperature_c,1)}</td><td>${f(r.travel_rad*57.2958,1,'°')}</td>`;
+  const inp=tr.querySelector('input');inp.onfocus=()=>editing=true;
+  inp.onchange=()=>{editing=false;if(inp.value==='')return;post('/scale',{step:r.step,scale_kg:+inp.value,zero_kg:+$('tZero').value}).then(refresh).catch(()=>{})};
+  inp.onblur=()=>editing=false}}
+function render(){const s=S;const bus=s.buses.find(b=>b.name===$('bus').value)||{};
+ $('link').value=`${bus.operstate||'?'} ${bus.state||''} ${bus.bitrate?bus.bitrate/1e6+' Mbit/s':''}`;
+ $('busBadge').textContent=s.channel?`${s.channel} open`:'Bus closed';$('busBadge').className='badge '+(s.channel?'ok':'');
+ $('motorBadge').textContent=s.motor_id==null?'No motor':`Motor ${s.motor_id} · ${s.enabled?s.mode.toUpperCase():'disabled'}`;
+ $('motorBadge').className='badge '+(s.enabled?'warn':s.motor_id!=null?'ok':'');
+ const fb=s.feedback;$('pos').textContent=fb?f(fb.relative_deg,1,'°'):'—';$('vel').textContent=fb?f(fb.velocity,2,' rad/s'):'—';
+ $('tq').textContent=fb?f(fb.torque,2,' Nm'):'—';$('iq').textContent=f(s.iq_a,2,' A');$('temp').textContent=fb?f(fb.temperature,1,' °C'):'—';
+ $('vbus').textContent=f(s.vbus_v,1,' V');$('lim').textContent=f(s.torque_limit,2,' Nm');$('age').textContent=fb?f(fb.age*1000,0,' ms'):'—';
+ const faults=[...(fb?.flags||[]),...(s.faults||[])];$('faultLine').textContent='Faults: '+(faults.join(', ')||'none');$('faultLine').className=faults.length?'bad':'muted';
+ $('message').textContent=s.message+(s.error&&s.error!==s.message?' · '+s.error:'');if(s.error&&!$('error').textContent)$('error').textContent=s.error;
+ const t=s.test;$('nextBtn').hidden=!(t&&t.phase==='wait');
+ if(t&&t.phase!=='done')$('testLine').textContent=`Step ${t.index+1}/${t.steps.length} (${t.steps[t.index]} Nm) · ${t.phase} · commanding ${f(t.command*t.direction,2)} Nm`;
+ else if(t)$('testLine').textContent=`Test ended: ${t.stopped||'done'}`;
+ $('runDir').textContent=s.run_dir?`Saved to ${s.run_dir}`:'';
+ const open=!!s.channel,sel=s.motor_id!=null;$('openBtn').disabled=open;$('closeBtn').disabled=!open;$('scanBtn').disabled=!open||s.enabled;$('selectBtn').disabled=!open||s.enabled;
+ for(const id of ['goBtn','spinBtn','refBtn'])$(id).disabled=!sel||s.mode==='torque';for(const b of document.querySelectorAll('[data-delta]'))b.disabled=!sel||s.mode==='torque';
+ $('clearBtn').disabled=!sel||s.enabled;$('touchBtn').disabled=$('testBtn').disabled=!sel||s.enabled;renderResults()}
+async function refresh(){try{const r=await fetch('/state');S=await r.json();$('connBadge').textContent='Connected';$('connBadge').className='badge ok';render()}
+ catch{$('connBadge').textContent='Disconnected';$('connBadge').className='badge bad'}}
+$('bus').onchange=()=>S&&render();setInterval(refresh,250);refresh();
+</script></body></html>
