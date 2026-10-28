@@ -604,11 +604,14 @@ class Dashboard:
                             self.recording['skipped'] += 1
                     else:
                         motors = {m['motor_id']: dict(position=m['position'], velocity=m['velocity'],
-                                                      torque=m['torque'], enabled=m['enabled'])
+                                                      torque=m['torque'], enabled=m['enabled'],
+                                                      temperature=m['temperature'], mode=m['mode'],
+                                                      faults=m['faults'], fault_valid=m['fault_valid'])
                                   for m in robot['motors'] if m['valid'] and m['fresh']}
                         stream.write(json.dumps(clean(dict(
                             t=round(time.monotonic() - start, 3), unix=time.time(), label=label,
-                            robot_age_s=age, motors=motors)), allow_nan=False) + '\n')
+                            robot_age_s=age, safety=robot.get('safety_state'),
+                            status=robot.get('status_reason'), motors=motors)), allow_nan=False) + '\n')
                         with self.lock:
                             self.recording['samples'] += 1
                     self.record_stop.wait(RECORD_PERIOD_S)

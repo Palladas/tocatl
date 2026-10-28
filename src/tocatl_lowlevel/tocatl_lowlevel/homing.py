@@ -1193,6 +1193,27 @@ def create_homing(node, hardware):
     return worker
 
 
+def feedback_problem(motor_id, s, now, stale_after, max_temperature=45.0):
+    """Why a ready motor's feedback no longer supports readiness, naming the condition and
+    its value, or '' if it is fine."""
+    for name, received in (('state', s.received), ('fault-status', s.fault_received)):
+        if received is None:
+            return f'Motor {motor_id} {name} feedback missing'
+        if not 0 <= now-received < stale_after:
+            return f'Motor {motor_id} {name} feedback {now-received:.2f} s old (limit {stale_after} s)'
+    if s.mode not in (0, 2):
+        return f'Motor {motor_id} mode {s.mode}'
+    if s.faults or s.state_faults:
+        return f'Motor {motor_id} faults {sorted(set(s.faults) | set(s.state_faults))}'
+    nonfinite = [n for n, v in (('position', s.position), ('velocity', s.velocity), ('torque', s.torque),
+                                ('temperature', s.temperature)) if not math.isfinite(v)]
+    if nonfinite:
+        return f'Motor {motor_id} non-finite {", ".join(nonfinite)}'
+    if s.temperature >= max_temperature:
+        return f'Motor {motor_id} temperature {s.temperature:.1f} C (limit {max_temperature:g} C)'
+    return ''
+
+
 class LegReadiness:
     """Session-only home references; faults or lost feedback latch unready.
 
@@ -1206,12 +1227,16 @@ class LegReadiness:
         self.lock = threading.RLock()
         self.homes = {}
         self.yaw = {}
+        self.log = None  # optional callable(message): every readiness drop is reported
         self.reason = 'Pitch/knee pair has not completed homing in this session'
         self.reasons = {leg: 'Not homed in this session' for leg in range(1, 7)}
 
     def invalidate(self, reason, leg_id=None):
         with self.lock:
             legs = range(1, 7) if leg_id is None else (leg_id,)
+            dropped = sorted(leg for leg in legs if any(mid in self.homes for mid in hip_knee_ids(leg)))
+            if dropped and self.log is not None:
+                self.log(f'Readiness cleared for legs {dropped}: {reason}')
             for leg in legs:
                 for mid in hip_knee_ids(leg):
                     self.homes.pop(mid, None)
@@ -1296,15 +1321,9 @@ class LegReadiness:
             now = time.monotonic()
             for leg in {mid // 10 for mid in self.homes}:
                 for mid in hip_knee_ids(leg) + ((leg * 10 + 1,) if leg * 10 + 1 in self.yaw else ()):
-                    s = samples[mid]
-                    if (s.received is None or s.fault_received is None or
-                            not 0 <= now-s.received < hardware.stale_after or
-                            not 0 <= now-s.fault_received < hardware.stale_after or
-                            s.mode not in (0, 2) or s.faults or s.state_faults or
-                            not all(math.isfinite(v) for v in
-                                    (s.position, s.velocity, s.torque, s.temperature)) or
-                            s.temperature >= 45):
-                        self.invalidate(f'Motor {mid} feedback lost or faulted; rehome required', leg)
+                    problem = feedback_problem(mid, samples[mid], now, hardware.stale_after)
+                    if problem:
+                        self.invalidate(f'{problem}; rehome required', leg)
                         break
             return bool(self.homes)
 

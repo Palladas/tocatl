@@ -96,7 +96,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#141c20f2;border-top:1p
 <label data-kinds="nudge">Knee change (rad)<input id="mDKnee" type="number" value="-0.2" min="-0.8" max="0.8" step="0.05"></label>
 <label data-kinds="pose circle stand">Foot r from yaw axis (m)<input id="mR" type="number" value="0.35" step="0.01"></label>
 <label data-kinds="stand">Resting height (m)<input id="mRest" type="number" value="0.10" min="0.02" max="0.6" step="0.01"><small>Mounting plane above the ground while the body rests.</small></label>
-<label data-kinds="stand">Standing height (m)<input id="mStand" type="number" value="0.20" min="0.03" max="0.6" step="0.01"></label>
+<label data-kinds="stand">Standing height (m)<input id="mStand" type="number" value="0.15" min="0.03" max="0.6" step="0.01"></label>
 <label data-kinds="stand">Foot clearance (m)<input id="mClear" type="number" value="0.03" min="0.005" max="0.1" step="0.005"></label>
 <label data-kinds="stand">Robot mass (kg)<input id="mMass" type="number" value="16" min="1" max="50" step="0.5"><small>~16 kg (Pranav, 2026-10-27). Used to check every joint's load torque against the cap.</small></label>
 <label data-kinds="pose circle">Foot z from mounting plane (m)<input id="mZ" type="number" value="-0.05" step="0.01"></label>
@@ -264,7 +264,9 @@ function renderMotion(s){const want=(s.motion_profile?s.legs:[]).join(',');
   for(const i of $('motionLegs').querySelectorAll('input'))i.onchange=controls}
  $('motionLog').hidden=!s.motion_log.length;const el=$('motionLog'),atEnd=el.scrollTop+el.clientHeight>=el.scrollHeight-20;
  el.textContent=s.motion_log.join('\n');if(atEnd)el.scrollTop=el.scrollHeight}
-function motionKind(){const k=$('motionKind').value;for(const l of document.querySelectorAll('[data-kinds]'))l.hidden=!l.dataset.kinds.split(' ').includes(k)}
+function motionKind(){const k=$('motionKind').value;for(const l of document.querySelectorAll('[data-kinds]'))l.hidden=!l.dataset.kinds.split(' ').includes(k);
+ // Stand: closer feet ease the hips (16 kg on six legs: ~6.5 Nm per hip at r 0.25 vs ~9.2 at 0.35).
+ if(k==='stand'&&Number($('mR').value)===0.35)$('mR').value='0.25'}
 function motionPayload(){const k=$('motionKind').value,n=id=>Number($(id).value),v={max_speed_rad_s:n('mSpeed'),hold_s:n('mHold'),kp:n('mKp'),kd:n('mKd')};
  if(k==='nudge'){v.d_pitch_rad=n('mDPitch');v.d_knee_rad=n('mDKnee')}else if(k==='stand'){v.r_m=n('mR');v.rest_height_m=n('mRest');v.stand_height_m=n('mStand');v.clearance_m=n('mClear');v.mass_kg=n('mMass')}else{v.r_m=n('mR');v.z_m=n('mZ')}
  if(k==='circle'){v.radius_m=n('mRadius');v.loops=Math.round(n('mLoops'))}

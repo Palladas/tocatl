@@ -338,9 +338,12 @@ class ControllerTests(ControllerBase):
 
 
 class RecordTests(ControllerBase):
-    motors = [dict(motor_id=12, valid=True, fresh=True, position=0.5, velocity=0.0, torque=0.1, enabled=False),
-              dict(motor_id=13, valid=True, fresh=False, position=0.7, velocity=0.0, torque=0.0, enabled=False),
-              dict(motor_id=51, valid=False, fresh=False, position=None, velocity=None, torque=None, enabled=False)]
+    motors = [dict(motor_id=12, valid=True, fresh=True, position=0.5, velocity=0.0, torque=0.1, enabled=False,
+                   temperature=31.5, mode='0', faults=[], fault_valid=True),
+              dict(motor_id=13, valid=True, fresh=False, position=0.7, velocity=0.0, torque=0.0, enabled=False,
+                   temperature=30.0, mode='0', faults=[], fault_valid=True),
+              dict(motor_id=51, valid=False, fresh=False, position=None, velocity=None, torque=None, enabled=False,
+                   temperature=None, mode='', faults=[], fault_valid=False)]
 
     def wait_done(self):
         for _ in range(100):
@@ -371,7 +374,8 @@ class RecordTests(ControllerBase):
         lines = [json.loads(l) for l in Path(self.dash.recording['path']).read_text().splitlines()]
         self.assertGreater(len(lines), 2)
         self.assertEqual(self.dash.recording['skipped'], 2)
-        self.assertEqual(lines[0]['motors'], {'12': dict(position=0.5, velocity=0.0, torque=0.1, enabled=False)})
+        self.assertEqual(lines[0]['motors'], {'12': dict(position=0.5, velocity=0.0, torque=0.1, enabled=False,
+                                                         temperature=31.5, mode='0', faults=[], fault_valid=True)})
         self.assertEqual(lines[0]['label'], 'leg1-hip-only')
         self.assertTrue(Path(self.dash.recording['path']).parent.parent == Path(self.dash.run_dir))
         self.assertEqual(self.dash.state()['recordings'], [Path(self.dash.recording['path']).name])

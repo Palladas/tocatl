@@ -77,6 +77,7 @@ class MotorController(Node):
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
+        self.readiness.log = lambda message: self.get_logger().warning(message)
         self.motor_subscription = self.create_subscription(
             MotorCommand, 'motor_command', self.motor_command,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -205,6 +206,7 @@ class MotorController(Node):
                 self.homing_was_active = active
             state = build_hardware_state(self.hardware, self.get_clock().now().to_msg(),
                                          self.sequence, self.body_frame)
+            self.log_motion_fault()
             armed, faulted, reason = self.motion.status()
             if self.homing is not None and (self.homing.active or self.homing.status()[1] or
                                             not hasattr(self.homing, 'readiness')) and not armed:
@@ -235,6 +237,16 @@ class MotorController(Node):
             self.add_command_status(state)
         self.state_publisher.publish(state)
         self.sequence += 1
+
+    def log_motion_fault(self):
+        """Log each new motion fault once, with its reason (it was only in robot_state)."""
+        motion = getattr(self, 'motion', None)
+        count = getattr(motion, 'fault_count', 0) if motion is not None else 0
+        if count != getattr(self, 'logged_fault_count', 0):
+            self.logged_fault_count = count
+            _, faulted, reason = motion.status()
+            if faulted:
+                self.get_logger().error(f'Motion fault: {reason}')
 
     def add_leg_status(self, state):
         homing = getattr(self, 'homing', None)

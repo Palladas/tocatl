@@ -408,3 +408,43 @@ def test_leg_scope_reports_a_declared_yaw():
     assert scopes()[1] == 'pitch_knee'
     readiness.declare_yaw(hardware, [11])
     assert scopes()[1] == 'pitch_knee_yaw' and scopes()[2] == 'pitch_knee'
+
+
+
+@pytest.mark.parametrize('change,expected', [
+    (dict(fault_received=-2.0), 'Motor 22 fault-status feedback 2.00 s old (limit 1.5 s)'),
+    (dict(temperature=46.0), 'Motor 22 temperature 46.0 C (limit 45 C)'),
+    (dict(state_faults=('Under voltage',)), "Motor 22 faults ['Under voltage']"),
+    (dict(mode=1), 'Motor 22 mode 1'),
+])
+def test_readiness_drop_names_the_motor_and_condition_and_is_logged(change, expected):
+    """2026-10-27 17:06: a stand faulted and the logs could not say which motor or why."""
+    readiness, hardware, samples = yaw_setup()
+    logged = []
+    readiness.log = logged.append
+    snapshot = hardware.snapshot
+
+    def changed():
+        all_samples, error = snapshot()
+        values = {k: (time.monotonic() + v if k.endswith('received') else v) for k, v in change.items()}
+        all_samples[22] = Sample(**{**vars(all_samples[22]), **values})
+        return all_samples, error
+    hardware.snapshot = changed
+    readiness.check(hardware)
+    assert readiness.leg_reason(2) == expected + '; rehome required'
+    assert logged == [f'Readiness cleared for legs [2]: {expected}; rehome required']
+    assert 12 in readiness.snapshot()[0]  # leg 1 unaffected
+
+
+def test_motion_faults_are_logged_once_each():
+    pytest.importorskip('rclpy')
+    from tocatl_lowlevel.motor_controller import MotorController
+    logged = []
+    motion = NS(fault_count=0, status=lambda: (False, True, 'Motor 42 telemetry/fault status unavailable or stale'))
+    node = NS(motion=motion, get_logger=lambda: NS(error=logged.append))
+    MotorController.log_motion_fault(node)
+    assert logged == []
+    motion.fault_count = 1
+    MotorController.log_motion_fault(node)
+    MotorController.log_motion_fault(node)
+    assert logged == ['Motion fault: Motor 42 telemetry/fault status unavailable or stale']
