@@ -18,12 +18,16 @@ verification.
 
 | Leg | CAN bus | Hip yaw | Hip pitch | Knee |
 |---:|:---:|---:|---:|---:|
-| 1 | `can1` | 11 | 12 | 13 |
-| 2 | `can0` | 21 | 22 | 23 |
+| 1 | `can0` | 11 | 12 | 13 |
+| 2 | `can1` | 21 | 22 | 23 |
 | 3 | `can0` | 31 | 32 | 33 |
-| 4 | `can0` | 41 | 42 | 43 |
-| 5 | `can1` | 51 | 52 | 53 |
+| 4 | `can1` | 41 | 42 | 43 |
+| 5 | `can0` | 51 | 52 | 53 |
 | 6 | `can1` | 61 | 62 | 63 |
+
+**Rewired 2026-10-28:** each tripod now has its own bus, with legs 1/3/5 on `can0` and
+legs 2/4/6 on `can1`. Before that, legs 2/3/4 were on `can0` and 1/5/6 on `can1`. Older
+notes below, and logs from before this date, use the old buses.
 
 - Bus bitrate: 1,000,000 bit/s.
 - Motor family: Xiaomi CyberGear, based on the motor label and deployed driver.

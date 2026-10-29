@@ -120,7 +120,7 @@ def test_each_leg_routes_only_its_pair_and_saves_correct_bus(leg, tmp_path, quic
     assert all(hw.samples[mid].mode == 0 and hw.samples[mid].runtime_torque_limit == 12 for mid in pair)
     record = json.loads((tmp_path/'homes.json').read_text())['legs'][str(leg)]
     assert record['motor_ids'] == list(pair)
-    assert {m['bus'] for m in record['motors']} == {'can1' if leg in (1,5,6) else 'can0'}
+    assert {m['bus'] for m in record['motors']} == {'can0' if leg in (1,3,5) else 'can1'}
     assert record['motors'][0]['config']['direction'] == profiles()[leg].hip_direction
     assert record['motors'][1]['config']['direction'] == profiles()[leg].knee_direction
 
@@ -216,7 +216,7 @@ def test_feedback_search_handles_each_joint_direction(leg, direction):
         if seq.done:break
     assert seq.done
     assert seq.result()['home_position_rad'] == pytest.approx(stop)
-    assert seq.result()['bus'] == ('can1' if leg in (1,5,6) else 'can0')
+    assert seq.result()['bus'] == ('can0' if leg in (1,3,5) else 'can1')
 
 
 def test_all_leg_ros_profile_and_service_dispatch_without_can(monkeypatch, tmp_path, quick_contact):

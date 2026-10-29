@@ -263,7 +263,7 @@ def test_transport_polls_only_selected_motors():
         def request_parameter(self, name):
             calls.append((name, self.motor_id))
             if self.motor_id == 13: updated.set()
-    hw = HardwareTelemetry(lambda: None, {'can1': 'unused'}, motor_ids=[12, 13],
+    hw = HardwareTelemetry(lambda: None, {'can0': 'unused'}, motor_ids=[12, 13],
                            can_module=NS(interface=NS(Bus=lambda **kwargs: Bus()), Notifier=Notifier),
                            driver_module=NS(CyberGearMotor=Driver))
     try:
@@ -278,7 +278,7 @@ def test_transport_polls_only_selected_motors():
 def test_invalid_telemetry_selection_rejected_before_opening_can(ids):
     from tocatl_lowlevel.hardware import HardwareTelemetry
     with pytest.raises(ValueError, match='telemetry motor IDs'):
-        HardwareTelemetry(lambda: None, {'can1': 'unused'}, motor_ids=ids)
+        HardwareTelemetry(lambda: None, {'can0': 'unused'}, motor_ids=ids)
 
 
 def simulate_arbitrary_start(motor_id, start, stop, reference=None):

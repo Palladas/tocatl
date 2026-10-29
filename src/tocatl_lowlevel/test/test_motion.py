@@ -538,7 +538,7 @@ def telemetry_with_samples(received_ages, priority=None):
         original(self)
     h.HardwareTelemetry.poll = delayed_poll
     try:
-        hw = HardwareTelemetry(lambda: None, {'can1': 'unused'}, motor_ids=[12, 13],
+        hw = HardwareTelemetry(lambda: None, {'can0': 'unused'}, motor_ids=[12, 13],
                                can_module=NS(interface=NS(Bus=lambda **kw: Bus()), Notifier=Notifier),
                                driver_module=NS(CyberGearMotor=Driver))
     finally:

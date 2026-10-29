@@ -21,7 +21,7 @@ class Motor:
 
 
 def _build_motor_map() -> tuple[Motor, ...]:
-    buses = {1: "can1", 2: "can0", 3: "can0", 4: "can0", 5: "can1", 6: "can1"}
+    buses = {1: "can0", 2: "can1", 3: "can0", 4: "can1", 5: "can0", 6: "can1"}
     joints = {1: "hip_yaw", 2: "hip_pitch", 3: "knee"}
     return tuple(
         Motor(motor_id=leg * 10 + joint_number, leg=leg, joint=joint, bus=buses[leg])

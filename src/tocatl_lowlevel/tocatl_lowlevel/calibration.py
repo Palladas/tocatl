@@ -18,7 +18,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 JOINTS = ("hip_yaw", "hip_pitch", "knee")
-CAN_BY_LEG = {1: "can1", 2: "can0", 3: "can0", 4: "can0", 5: "can1", 6: "can1"}
+CAN_BY_LEG = {1: "can0", 2: "can1", 3: "can0", 4: "can1", 5: "can0", 6: "can1"}
 JOINT_SUFFIX = {"hip_yaw": 1, "hip_pitch": 2, "knee": 3}
 
 
