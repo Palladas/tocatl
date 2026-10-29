@@ -50,6 +50,7 @@ cd ~/tocatl && source /opt/ros/jazzy/setup.bash && source install/setup.bash
 Run this after every reboot, or after a bus freeze, with the controller stopped:
 ```bash
 for b in can0 can1; do sudo ip link set $b down; sudo ip link set $b type can bitrate 1000000; sudo ip link set $b up; done
+# one bus only: replace "can0 can1" with just "can0"
 ip -details -statistics link show can0 | head -5      # want: UP, ERROR-ACTIVE, bitrate 1000000
 ip -details -statistics link show can1 | head -5
 ps -eo pid,args | grep -E "[m]otor_controller|[t]ocatl_play|[m]otor_bench"   # must print nothing before starting
@@ -61,17 +62,25 @@ their limits on the way out. Set these two variables first:
 ```bash
 C=src/tocatl_bringup/config
 RUN=~/tocatl-runs/cli-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p $RUN
+CTL=".venv/bin/python install/tocatl_lowlevel/lib/tocatl_lowlevel/motor_controller"
 ```
+The controller must run under `.venv` Python, which has `python-can` and `CyberGearDriver`.
+`ros2 run tocatl_lowlevel motor_controller` uses the system Python and fails with
+`No module named 'can'`.
+
+**Only one bus connected:** add `-p "can_buses:=[can0]"` (legs 1/3/5) or `-p "can_buses:=[can1]"`
+(legs 2/4/6) and limit the motor IDs and legs to that bus. For example, Level 1 on can0:
+`-p "can_buses:=[can0]" -p "telemetry_motor_ids:=[11,12,13,31,32,33,51,52,53]"`.
 
 ### C1. Level 1 · read-only telemetry
 ```bash
-ros2 run tocatl_lowlevel motor_controller --ros-args --params-file $C/hardware.yaml 2>&1 | tee $RUN/controller.log
+$CTL --ros-args --params-file $C/hardware.yaml 2>&1 | tee $RUN/controller.log
 ```
 
 ### C2. Level 2 · homing
 Homing only, no motion. Edit the legs list as needed:
 ```bash
-ros2 run tocatl_lowlevel motor_controller --ros-args --params-file $C/homing-hip-knee.yaml \
+$CTL --ros-args --params-file $C/homing-hip-knee.yaml \
   -p allow_homing:=true -p "homing.legs:=[1,2,3,4,5,6]" -p homing.verify_repeatability:=false \
   -p homing.output_path:=$RUN/hip-knee-homing.json 2>&1 | tee $RUN/controller.log
 ```
@@ -82,7 +91,7 @@ Hip pitch and knee only; the yaws stay unpowered. Limits: kp ≤ 30, kd ≤ 2, 1
 All six legs:
 ```bash
 IDS="[12,13,22,23,32,33,42,43,52,53,62,63]"
-ros2 run tocatl_lowlevel motor_controller --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-feet-air.yaml \
+$CTL --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-feet-air.yaml \
   -p allow_homing:=true -p "homing.legs:=[1,2,3,4,5,6]" -p homing.verify_repeatability:=false -p homing.output_path:=$RUN/hip-knee-homing.json \
   -p allow_hardware_motion:=true -p "actuation_motor_ids:=$IDS" -p "telemetry_motor_ids:=$IDS" 2>&1 | tee $RUN/controller.log
 ```
@@ -93,7 +102,7 @@ For fewer legs, change `homing.legs` and `IDS` together. For example, legs 1 and
 All 18 motors, including the yaws. Limits: kp ≤ 100, kd ≤ 5, 12 Nm cap.
 ```bash
 IDS="[11,12,13,21,22,23,31,32,33,41,42,43,51,52,53,61,62,63]"
-ros2 run tocatl_lowlevel motor_controller --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-standing.yaml \
+$CTL --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-standing.yaml \
   -p allow_homing:=true -p "homing.legs:=[1,2,3,4,5,6]" -p homing.verify_repeatability:=false -p homing.output_path:=$RUN/hip-knee-homing.json \
   -p allow_hardware_motion:=true -p "actuation_motor_ids:=$IDS" -p "telemetry_motor_ids:=$IDS" 2>&1 | tee $RUN/controller.log
 ```
