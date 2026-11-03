@@ -24,7 +24,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-BUSES = ('can0', 'can1')
+BUSES = ('can0', 'can1', 'can2')
 BITRATE = 1_000_000
 HOST_ID = 0
 # Robot motor IDs (leg x 10 + joint). Commanding one needs an explicit acknowledgement.

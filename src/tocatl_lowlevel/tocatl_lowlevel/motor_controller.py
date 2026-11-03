@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from tocatl_lowlevel.motor_commands import MotorCommands, HardwareMotion
 
 from tocatl_lowlevel.motor_commands import JOINT_NAMES, MockMotors
-from tocatl_lowlevel.motor_map import MOTORS, hip_knee_ids
+from tocatl_lowlevel.motor_map import CAN_BUSES, MOTORS, hip_knee_ids
 from tocatl_lowlevel.homing import LegReadiness
 
 
@@ -40,11 +40,11 @@ class MotorController(Node):
             homes=lambda: self.readiness.snapshot()[0])
         if backend == 'hardware':
             from tocatl_lowlevel.hardware import HardwareTelemetry
-            buses = self.declare_parameter('can_buses', ['can0', 'can1']).value
-            if not buses or len(set(buses)) != len(buses) or any(b not in ('can0', 'can1') for b in buses):
+            buses = self.declare_parameter('can_buses', list(CAN_BUSES)).value
+            if not buses or len(set(buses)) != len(buses) or any(b not in CAN_BUSES for b in buses):
                 raise ValueError('can_buses must select unique known CAN buses')
             channels = {name: self.declare_parameter(name + '_channel', name).value
-                        for name in ('can0', 'can1')}
+                        for name in CAN_BUSES}
             self.hardware = HardwareTelemetry(
                 lambda: self.get_clock().now().to_msg(),
                 {name: channels[name] for name in buses},

@@ -49,10 +49,10 @@ cd ~/tocatl && source /opt/ros/jazzy/setup.bash && source install/setup.bash
 ## B. CAN links
 Run this after every reboot, or after a bus freeze, with the controller stopped:
 ```bash
-for b in can0 can1; do sudo ip link set $b down; sudo ip link set $b type can bitrate 1000000; sudo ip link set $b up; done
-# one bus only: replace "can0 can1" with just "can0"
-ip -details -statistics link show can0 | head -5      # want: UP, ERROR-ACTIVE, bitrate 1000000
-ip -details -statistics link show can1 | head -5
+for b in can0 can1 can2; do sudo ip link set $b down; sudo ip link set $b type can bitrate 1000000; sudo ip link set $b up; done
+# fewer buses connected: list only those, e.g. "for b in can2"
+ip -br link | grep can      # want every bus UP
+ip -details link show can0 | grep -oE "can state [A-Z-]+|bitrate [0-9]+"   # want ERROR-ACTIVE, 1000000; repeat for can1, can2
 ps -eo pid,args | grep -E "[m]otor_controller|[t]ocatl_play|[m]otor_bench"   # must print nothing before starting
 ```
 
@@ -68,9 +68,15 @@ The controller must run under `.venv` Python, which has `python-can` and `CyberG
 `ros2 run tocatl_lowlevel motor_controller` uses the system Python and fails with
 `No module named 'can'`.
 
-**Only one bus connected:** add `-p "can_buses:=[can0]"` (legs 1/3/5) or `-p "can_buses:=[can1]"`
-(legs 2/4/6) and limit the motor IDs and legs to that bus. For example, Level 1 on can0:
-`-p "can_buses:=[can0]" -p "telemetry_motor_ids:=[11,12,13,31,32,33,51,52,53]"`.
+**Buses:** can0 carries legs 1/2, can1 carries legs 3/4, and can2 carries legs 5/6.
+
+**Not every bus connected:** add `-p "can_buses:=[...]"` and limit the motor IDs and legs to
+those buses. For example, Level 1 with only can2:
+`-p "can_buses:=[can2]" -p "telemetry_motor_ids:=[51,52,53,61,62,63]"`.
+
+**Adapter got a different name:** point a bus at another interface, e.g.
+`-p can2_channel:=can0`. Linux names adapters in the order it finds them, so check
+`ip -br link` after every reboot.
 
 ### C1. Level 1 · read-only telemetry
 ```bash

@@ -274,7 +274,7 @@ def test_transport_polls_only_selected_motors():
     assert hw.samples[51].received is None
 
 
-@pytest.mark.parametrize('ids', [[], [12, 12], [12, 27], [22], [12.0]])
+@pytest.mark.parametrize('ids', [[], [12, 12], [12, 27], [32], [12.0]])
 def test_invalid_telemetry_selection_rejected_before_opening_can(ids):
     from tocatl_lowlevel.hardware import HardwareTelemetry
     with pytest.raises(ValueError, match='telemetry motor IDs'):

@@ -20,7 +20,7 @@ them unpowered or make sure the test motor's ID differs from theirs.
 
 ## 1. Bus and CAN ID
 
-- Choose `can0` or `can1` and **Open bus**. The link must be UP at 1 Mbit/s.
+- Choose `can0`, `can1` or `can2` and **Open bus**. The link must be UP at 1 Mbit/s.
 - **Scan for motors** asks IDs 1–127 for their device ID (comm type 0, read-only). It lists
   each responder with its MCU UID. A factory CyberGear is ID 127.
 - Robot IDs (11–63) need the acknowledgement checkbox. Two UIDs answering the same ID is

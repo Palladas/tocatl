@@ -9,6 +9,7 @@ motor_controller:
     actuation_motor_ids: [11, 12, 13, 21, 22, 23, 31, 32, 33, 41, 42, 43, 51, 52, 53, 61, 62, 63]
     can0_channel: can0
     can1_channel: can1
+    can2_channel: can2
     poll_period_s: 0.5
     telemetry_timeout_s: 1.5
     body_frame: base_link
