@@ -156,3 +156,30 @@ def test_bad_inputs_refuse_before_ros(argv, message, capsys):
     assert main(argv) == 2
     out = capsys.readouterr().out
     assert out.startswith('Refused:') and message in out
+
+
+def test_body_height_steps_wait_for_settled_feet_and_move_vertically(geometry, joint_map):
+    session, raw = resting(geometry, joint_map)
+    clock = Clock()
+    commands = {'v': (0.03, 0.0, 0.0)}
+    s = WalkStreamer(geometry, session, WalkParams(gait='ripple'), raw, lambda: commands['v'],
+                     offsets=STANDING, clock=clock, lead=0.4)
+    assert not s.height_problems(0.16) and not s.height_problems(0.14)
+    s.allow_heights([0.14, 0.16])
+    assert s.request_height_step(+1) == pytest.approx(0.16)
+    assert s.request_height_step(+1) == pytest.approx(0.16)        # nothing verified above
+    measured = dict(raw)
+    run(s, clock, s.blend_s + 3.0, measured)
+    assert s.phase in ('WALK', 'ADJUST')
+    run(s, clock, 15.0, measured)
+    assert s.phase == 'WALK' and s.gen.params.body_height_m == pytest.approx(0.16)
+    feet = feet_from(geometry, session, measured)
+    down = [l for l, on_ground in s.gen.contact().items() if on_ground]
+    assert len(down) >= 5
+    assert all(feet[l][2] == pytest.approx(-0.16 - geometry.leg(l).mount_z_m, abs=1e-6) for l in down)
+    s.request_stop()
+    run(s, clock, 40.0, measured)
+    assert s.phase == 'DONE'
+    final = feet_from(geometry, session, measured)
+    start = feet_from(geometry, session, raw)
+    assert all(final[l] == pytest.approx(start[l], abs=1e-6) for l in start)

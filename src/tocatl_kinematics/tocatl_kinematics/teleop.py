@@ -9,6 +9,7 @@
 | Start held 1 s | arm (/motors/enable true): tocatl_walk rises, then walks |
 | B | stop: walk/stop, which settles the feet, lowers the body and disarms |
 | X | next gait: ripple, then tetrapod, then tripod (walk/gait; applied once the feet settle) |
+| D-pad up/down | body height up/down 1 cm (walk/height; among heights tocatl_walk verified) |
 | Back or Xbox button | DISARM now (/motors/enable false), the hard stop; a standing robot drops |
 
 Velocity is only non-zero while LB is held and /joy is fresh. If no /joy arrives for
@@ -36,6 +37,7 @@ class PadLayout:
     axis_ly: int = 1
     axis_rx: int = 3
     axis_rt: int = 5          # 1.0 released .. -1.0 pressed
+    axis_dpad_y: int = 7      # +1 up, -1 down
     button_b: int = 1
     button_x: int = 2
     button_lb: int = 4
@@ -71,6 +73,7 @@ class TeleopMapper:
     gait_index: int = 0
     last_joy: float = None
     previous: tuple = ()
+    previous_dpad: float = 0.0
     start_since: float = None
     armed_this_hold: bool = False
     events: list = field(default_factory=list)   # 'arm', 'disarm', 'stop', ('gait', name)
@@ -101,6 +104,11 @@ class TeleopMapper:
         else:
             self.start_since, self.armed_this_hold = None, False
         self.previous = tuple(buttons)
+        dpad = self._axis(axes, lay.axis_dpad_y)
+        step = 1 if dpad > 0.5 else -1 if dpad < -0.5 else 0
+        if step and step != (1 if self.previous_dpad > 0.5 else -1 if self.previous_dpad < -0.5 else 0):
+            self.events.append(('height', step))
+        self.previous_dpad = dpad
         if not self._button(buttons, lay.button_lb):
             self.twist = (0.0, 0.0, 0.0)
             return
@@ -125,7 +133,7 @@ def main(argv=None):
     import rclpy
     from geometry_msgs.msg import Twist
     from sensor_msgs.msg import Joy
-    from std_msgs.msg import Empty, String
+    from std_msgs.msg import Empty, Int8, String
     from std_srvs.srv import SetBool
     rclpy.init(args=argv)
     node = rclpy.create_node('tocatl_teleop')
@@ -137,6 +145,7 @@ def main(argv=None):
     cmd_vel = node.create_publisher(Twist, 'cmd_vel', 1)
     stop = node.create_publisher(Empty, 'walk/stop', 1)
     gait = node.create_publisher(String, 'walk/gait', 1)
+    height = node.create_publisher(Int8, 'walk/height', 1)
     enable = node.create_client(SetBool, 'motors/enable')
     node.create_subscription(Joy, 'joy', lambda m: mapper.update(m.axes, m.buttons, time.monotonic()), 10)
 
@@ -157,6 +166,9 @@ def main(argv=None):
             elif event == 'stop':
                 stop.publish(Empty())
                 node.get_logger().info('Stop: settling and sitting')
+            elif event[0] == 'height':
+                height.publish(Int8(data=event[1]))
+                node.get_logger().info(f'Body height {"up" if event[1] > 0 else "down"} (once the feet settle)')
             else:
                 gait.publish(String(data=event[1]))
                 node.get_logger().info(f'Gait {event[1]} (applies once the feet settle)')

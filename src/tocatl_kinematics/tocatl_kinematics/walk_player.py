@@ -8,6 +8,11 @@ Sequence:
 4. Stop: SETTLE (step until every foot is back at neutral), then EXIT (blend back to the
    starting feet, lowering the body), hold, disarm.
 
+Body height (``walk/height``, Int8 +1 raises, -1 lowers; the D-pad in teleop) moves in 1 cm
+steps among heights checked at startup (two each way, the full walk feasibility at each). A
+change waits for the feet to settle, then the body moves vertically (ADJUST) and walking
+resumes.
+
 Stopping:
 - First Ctrl-C (or a ``walk/stop`` message) stops gracefully as above.
 - A second Ctrl-C disarms at once. Disarming drops a standing robot, so keep it supported.
@@ -43,6 +48,8 @@ from tocatl_kinematics.player import (ARM_TIMEOUT_S, END_HOLD_S, SLOW_FROM, STAL
 from tocatl_kinematics.walk import GAITS, WalkGenerator, WalkParams, feasibility, solve
 
 BLEND_SPEED_M_S = 0.03     # enter/exit foot speed
+HEIGHT_STEP_M = 0.01       # D-pad body-height step
+HEIGHT_STEPS = 2           # verified steps each way from the start height
 BLEND_MIN_S = 2.0
 TICK_S = 0.02
 COMMAND_TIMEOUT_S = 0.5    # a /cmd_vel older than this counts as zero
@@ -88,6 +95,9 @@ class WalkStreamer:
         self.last_tick = self.last_advance = self.done_at = None
         self.stop_requested = False
         self.pending_gait = None
+        self.heights = (params.body_height_m,)   # body heights verified before streaming
+        self.pending_height = None
+        self.adjust = None                        # (from feet, to feet, seconds, generator) while ADJUST
         self.previous = dict(self.raw_start)
         self.max_lag = (None, 0.0)
 
@@ -100,6 +110,34 @@ class WalkStreamer:
             raise ValueError(f'gait must be one of {sorted(GAITS)}')
         self.pending_gait = name
 
+    def allow_heights(self, heights):
+        """Body heights the D-pad may choose (each checked beforehand), always including the start."""
+        self.heights = tuple(sorted(set(heights) | {self.gen.params.body_height_m}))
+
+    def request_height_step(self, direction):
+        """Raise (direction > 0) or lower the body to the next verified height, once the feet
+        have settled. Body height is the feet's depth below the mounting plane, so raising the
+        body means a larger height."""
+        current = self.pending_height if self.pending_height is not None else self.gen.params.body_height_m
+        options = [h for h in self.heights if (h > current + 1e-9 if direction > 0 else h < current - 1e-9)]
+        if options:
+            self.pending_height = min(options) if direction > 0 else max(options)
+        return self.pending_height
+
+    def height_problems(self, height):
+        """Joint-limit, reach and envelope problems for the neutral stance at ``height``."""
+        feet = WalkGenerator(self.geometry, replace(self.gen.params, body_height_m=height), self.legs).neutral
+        try:
+            solutions = solve(self.geometry, feet)
+        except KinematicsError as error:
+            return [f'height {height:.3f} m unreachable: {error}']
+        problems = [f'height {height:.3f} m: leg {leg} {name} {value:.3f} outside [{low:.2f}, {high:.2f}]'
+                    for leg, solution in solutions.items()
+                    for name, value, (low, high) in zip(('yaw', 'hip_pitch', 'knee'), solution.q,
+                                                         self.geometry.leg(leg).limits.as_tuple())
+                    if not low <= value <= high]
+        return problems + envelope_problems(self.session_map, self.raw_for(feet), self.offsets)
+
     # --- planning helpers --------------------------------------------------------------
     def feet_now(self):
         if self.phase in ('HOLD',):
@@ -110,6 +148,10 @@ class WalkStreamer:
         if self.phase in ('EXIT', 'END'):
             s = _quintic(self.blend / self.blend_s)
             return {l: self.neutral[l] + (self.start_feet[l] - self.neutral[l]) * s for l in self.legs}
+        if self.phase == 'ADJUST':
+            start, end, seconds, _ = self.adjust
+            s = _quintic(self.blend / seconds)
+            return {l: start[l] + (end[l] - start[l]) * s for l in self.legs}
         return self.gen.feet
 
     def raw_for(self, feet):
@@ -182,15 +224,35 @@ class WalkStreamer:
         elif self.phase in ('WALK', 'SETTLE'):
             if self.stop_requested and self.phase == 'WALK':
                 self.phase = 'SETTLE'
-            command = (0.0, 0.0, 0.0) if self.phase == 'SETTLE' or self.pending_gait else self.commands()
+            waiting = self.phase == 'SETTLE' or self.pending_gait or self.pending_height is not None
+            command = (0.0, 0.0, 0.0) if waiting else self.commands()
             self.gen.step(dt, command)
+            if self.pending_height is not None and self.gen.idle() and self.phase == 'WALK':
+                target = WalkGenerator(self.geometry, replace(self.gen.params, body_height_m=self.pending_height),
+                                       self.legs)
+                distance = max(np.linalg.norm(target.neutral[l] - self.neutral[l]) for l in self.legs)
+                self.adjust = ({l: p.copy() for l, p in self.gen.feet.items()}, target.neutral,
+                               max(1.0, distance / BLEND_SPEED_M_S), target)
+                self.phase, self.blend, self.pending_height = 'ADJUST', 0.0, None
+                return
             if self.pending_gait and self.gen.idle():
                 feet = self.gen.feet
                 self.gen = WalkGenerator(self.geometry, replace(self.gen.params, gait=self.pending_gait), self.legs,
                                          feet={l: p.copy() for l, p in feet.items()})
                 self.pending_gait = None
             if self.phase == 'SETTLE' and self.gen.idle():
+                distance = max(np.linalg.norm(self.start_feet[l] - self.neutral[l]) for l in self.legs)
                 self.phase, self.blend = 'EXIT', 0.0
+                self.blend_s = max(BLEND_MIN_S, distance / BLEND_SPEED_M_S)
+        elif self.phase == 'ADJUST':
+            _, end, seconds, target = self.adjust
+            self.blend = min(seconds, self.blend + dt)
+            if self.blend >= seconds:
+                if self.pending_gait:
+                    target = WalkGenerator(self.geometry, replace(target.params, gait=self.pending_gait), self.legs)
+                    self.pending_gait = None
+                self.gen, self.neutral = target, {l: p.copy() for l, p in end.items()}
+                self.phase, self.adjust = 'WALK', None
         elif self.phase == 'EXIT':
             self.blend = min(self.blend_s, self.blend + dt)
             if self.blend >= self.blend_s:
@@ -326,7 +388,7 @@ def main(argv=None):
     import rclpy
     from rclpy.signals import SignalHandlerOptions
     from geometry_msgs.msg import Twist
-    from std_msgs.msg import Empty, String
+    from std_msgs.msg import Empty, Int8, String
     from std_srvs.srv import SetBool
     from tocatl_interfaces.msg import MotorCommand, MotorTarget, RobotState
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
@@ -356,6 +418,13 @@ def main(argv=None):
         return twist['value'] if time.monotonic() - twist['at'] <= COMMAND_TIMEOUT_S else (0.0, 0.0, 0.0)
     node.create_subscription(Empty, 'walk/stop', lambda _: streamer and streamer.request_stop(), 1)
     node.create_subscription(String, 'walk/gait', lambda m: streamer and streamer.set_gait(m.data), 1)
+
+    def on_height(msg):
+        if streamer and msg.data:
+            height = streamer.request_height_step(msg.data)
+            print(f'Body height -> {height:.3f} m (once the feet settle)' if height is not None else
+                  f'No verified height further {"up" if msg.data > 0 else "down"}', flush=True)
+    node.create_subscription(Int8, 'walk/height', on_height, 1)
     try:
         deadline = time.monotonic() + 5.0
         while 'msg' not in latest and time.monotonic() < deadline:
@@ -379,6 +448,22 @@ def main(argv=None):
         streamer = stopper['s'] = WalkStreamer(geometry, session_map, params, raw_start, commands,
                                                offsets=limits.offsets, lead=lead_for_step(limits.max_step))
         report['blend'] = dict(seconds=streamer.blend_s, problems=streamer.blend_problems())
+        allowed, rejected = [], {}
+        for k in range(1, HEIGHT_STEPS + 1):
+            for height in (params.body_height_m - k * HEIGHT_STEP_M, params.body_height_m + k * HEIGHT_STEP_M):
+                if not 0.05 <= height <= 0.5:
+                    continue
+                trial = replace(params, body_height_m=round(height, 4))
+                problems = streamer.height_problems(trial.body_height_m)
+                if not problems:
+                    problems = offline_report(geometry, joint_map, trial, args.mass_kg, limits,
+                                              args.max_motor_speed_rad_s)['violations']
+                if problems:
+                    rejected[trial.body_height_m] = problems[:2]
+                else:
+                    allowed.append(trial.body_height_m)
+        streamer.allow_heights(allowed)
+        report['heights'] = dict(allowed=list(streamer.heights), rejected=rejected)
         report['yaw_not_radial'] = streamer.yaw_problems()
         report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
                                            torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)

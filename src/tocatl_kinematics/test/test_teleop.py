@@ -64,3 +64,13 @@ def test_short_messages_from_other_drivers_do_not_crash():
     m = TeleopMapper()
     m.update([0.0, 1.0], [0, 0, 0, 0, 1], now=0.0)               # only 2 axes, LB at index 4
     assert m.command(0.0)[0] > 0
+
+
+def test_dpad_steps_height_once_per_press():
+    m = TeleopMapper()
+    axes, buttons = pad()
+    for value, now in ((1.0, 0.0), (1.0, 0.05), (0.0, 0.1), (-1.0, 0.15), (-1.0, 0.2), (1.0, 0.25)):
+        axes = list(axes)
+        axes[L.axis_dpad_y] = value
+        m.update(axes, buttons, now)
+    assert m.take_events() == [('height', 1), ('height', -1), ('height', 1)]

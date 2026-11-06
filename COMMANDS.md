@@ -217,6 +217,7 @@ ros2 run tocatl_kinematics tocatl_walk --gait ripple
 ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.02}}"    # T3; Ctrl-C = stop walking
 ros2 topic pub --once /walk/stop std_msgs/msg/Empty                              # settle and sit
 ros2 topic pub --once /walk/gait std_msgs/msg/String "{data: tripod}"            # switches once settled
+ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                 # body up 1 cm (-1 down), once settled
 ```
 - Arm in T3 ([F](#f-arm--disarm--stop)). The body rises, then it walks.
 - **Recommended for walking:** add `-p fault_response:=soften` to the C4 controller command. A
@@ -253,6 +254,7 @@ ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
 | Start held 1 s | ARM: the body rises, then it follows the sticks |
 | B | stop: settle the feet, lower the body, disarm |
 | X | next gait (ripple, then tetrapod, then tripod), applied once the feet settle |
+| D-pad up/down | body height ±1 cm, among the heights the walker checked at startup (two steps each way) |
 | Back / Xbox button | **DISARM now**, the hard stop; a standing robot drops |
 
 If the pad stops sending for 0.25 s, the walk command goes to zero and the feet settle.
