@@ -96,7 +96,7 @@ def _gait_args(parser):
         parser.add_argument(flag, type=type(getattr(defaults, field.name)), default=getattr(defaults, field.name))
     parser.add_argument('--heading-deg', type=float, help='walking direction in base_link (overrides --heading-rad)')
     parser.add_argument('--max-motor-velocity', type=float, default=CommandLimits.max_motor_velocity_rad_s,
-                        help='rad/s; mirrors hardware.yaml. Report only: this tool never changes controller limits')
+                        help='rad/s; mirrors motion-standing.yaml. Report only: this tool never changes controller limits')
     _common(parser)
 
 

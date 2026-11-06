@@ -29,7 +29,7 @@ QUINTIC_PEAK = 1.875  # peak d/dt of the quintic blend, per unit displacement pe
 class EnvelopeOffsets:
     """Raw-encoder bounds relative to each session reference; defaults mirror
     motion-feet-air.yaml (tocatl_play reads the running controller's actual values)."""
-    hip_pitch: tuple[float, float] = (-0.02, 1.6)
+    hip_pitch: tuple[float, float] = (-0.05, 4.32)  # joint [-0.02, 1.6] x the 2.7:1 hip gearbox
     knee: tuple[float, float] = (-1.7, 2.0)
     hip_yaw: tuple[float, float] = (-0.3, 0.3)
 

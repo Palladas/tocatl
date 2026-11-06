@@ -43,6 +43,13 @@ then a shin (`shin_m`, knee axis to foot contact point).
 
 ### Joint angles and raw encoder radians
 
+**Hip-pitch gearbox (2026-11-05).** A 2.7:1 planetary gearbox sits between each hip-pitch
+CyberGear and its thigh, so `hip_pitch.ratio` is 2.7. Every raw (motor) hip quantity is 2.7× the
+joint one: the controller envelopes in `motion-*.yaml` were scaled to keep the same joint range,
+and `--max-speed-rad-s` is a motor speed, so hip joint motion is 2.7× slower at the same setting.
+Hip torque at the joint is about 2.7× the motor's. The sign and knee coupling still need a
+hand-move recording to confirm.
+
 `config/joint-map.json` holds four values per motor: `sign`, `ratio` (motor turns per joint
 turn), `q_at_reference_rad`, and for knees `coupling_raw_per_hip_rad`. The mapping is:
 

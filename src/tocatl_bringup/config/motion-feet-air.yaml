@@ -23,9 +23,11 @@ motor_controller:
     motion_torque_limit_nm: 1.5
     poll_period_s: 0.1
     # Raw-encoder bounds relative to each motor's homed (compressed-stop) position this
-    # session; away from the stop is raw-positive. Hip: up to 1.6 rad off the stop (the
-    # 2026-08-25 calibration allowed 3.05). Knee: the calibration's [-0.1, 2.0], widened
-    # below by 1.6 because the knee encoder follows the hip (coupling +1).
+    # session; away from the stop is raw-positive. Hip: up to 1.6 rad of *joint* travel off
+    # the stop (the 2026-08-25 calibration allowed 3.05), which is 4.32 rad of motor travel
+    # through the 2.7:1 hip-pitch gearbox fitted 2026-11-05 (Pranav; same joint range).
+    # Knee: the calibration's [-0.1, 2.0], widened below by 1.6 because the knee encoder
+    # follows the hip joint (coupling +1, in joint radians, so unchanged by the gearbox).
     # tocatl_kinematics checks the tighter joint limits before anything is sent.
-    hip_pitch_home_offset_rad: [-0.02, 1.6]
+    hip_pitch_home_offset_rad: [-0.05, 4.32]
     knee_home_offset_rad: [-1.7, 2.0]

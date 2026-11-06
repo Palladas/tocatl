@@ -27,9 +27,11 @@ motor_controller:
     motion_torque_limit_nm: 12.0
     poll_period_s: 0.1
     # Raw-encoder bounds relative to this session's references (homed stop for hip
-    # pitch/knee, declared pose for yaw). Standing stances need the hip 1.7-2.1 rad off
-    # its folded stop, so the hip allows 2.6 (the 2026-08-25 calibration allowed 3.05).
+    # pitch/knee, declared pose for yaw). Standing stances need the hip 1.7-2.1 rad (joint)
+    # off its folded stop, so the hip allows 2.6 rad of joint travel (the 2026-08-25
+    # calibration allowed 3.05) = 7.02 rad of motor travel through the 2.7:1 hip-pitch
+    # gearbox fitted 2026-11-05 (Pranav; same joint range, not a widening).
     # Knee as in motion-feet-air.yaml. Yaw is only held: +/-0.3 rad around its declared pose.
     hip_yaw_home_offset_rad: [-0.3, 0.3]
-    hip_pitch_home_offset_rad: [-0.02, 2.6]
+    hip_pitch_home_offset_rad: [-0.05, 7.02]
     knee_home_offset_rad: [-1.7, 2.0]

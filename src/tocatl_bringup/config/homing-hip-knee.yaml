@@ -2,6 +2,13 @@
 # Stop candidates for legs 2–6 are operator-declared unloaded references.
 # Finish direction checks and loaded-stop verification before powered homing.
 # /motors/home runs opposite groups (1,4), (2,5), (3,6); individual services select one leg.
+#
+# !! 2026-11-05: a 2.7:1 planetary gearbox now sits between each hip-pitch motor and its thigh.
+# The hip_stop_rad values below were recorded with direct drive and no longer match the raw
+# encoder at the stop: re-declare every leg's hip stop before powered homing (an unmatched stop
+# is rejected as "Stall outside expected stop window"). The seek speed and contact torques are
+# motor-side, so at the joint the seek is 2.7x slower and the stop is pushed ~2.7x harder:
+# bench one leg first and lower the hip contact torque if the stop force is too high.
 motor_controller:
   ros__parameters:
     backend: hardware

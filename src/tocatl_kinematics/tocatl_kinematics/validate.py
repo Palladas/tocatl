@@ -1,9 +1,10 @@
 """Check a planned trajectory against joint limits and the controller's command limits.
 
-Defaults mirror src/tocatl_bringup/config/hardware.yaml (max_motor_velocity_rad_s 0.21,
-max_position_step_rad 0.1) and any out-of-service motors (none since 51 returned on
-2026-10-27). Limits are reported, not
-widened: a gait that needs more speed reports the slowest period that would fit.
+Defaults mirror src/tocatl_bringup/config/motion-standing.yaml, the loaded-motion profile
+(max_motor_velocity_rad_s 5.0, max_position_step_rad 0.5), and any out-of-service motors (none
+since 51 returned on 2026-10-27). Velocities are motor (raw) rad/s, so the 2.7:1 hip-pitch
+gearbox makes a hip joint motion 2.7x faster at its motor. Limits are reported, not widened:
+a gait that needs more speed reports the slowest period that would fit.
 """
 from __future__ import annotations
 
@@ -22,8 +23,8 @@ def _finite(values, reduce):
 
 @dataclass(frozen=True)
 class CommandLimits:
-    max_motor_velocity_rad_s: float = 0.21
-    max_position_step_rad: float = 0.1
+    max_motor_velocity_rad_s: float = 5.0
+    max_position_step_rad: float = 0.5
     command_period_s: float = 0.05
     min_reach_margin_m: float = 0.01
     out_of_service: tuple[int, ...] = ()

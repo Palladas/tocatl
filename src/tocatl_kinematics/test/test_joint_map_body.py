@@ -30,7 +30,10 @@ def test_legacy_equivalence(geometry, joint_map):
     from tocatl_kinematics import legacy_geometry as legacy
     from tocatl_kinematics.leg import fk
     leg = geometry.leg(1)
-    jm = joint_map.with_references({11: 0.0, 12: 0.0, 13: 0.0}, 'legacy motor zero')
+    from dataclasses import replace
+    # The legacy mapping is direct drive; the hip-pitch gearbox (2.7:1, 2026-11-05) came later.
+    direct = replace(joint_map, motors={**joint_map.motors, 12: replace(joint_map.motors[12], ratio=1.0)})
+    jm = direct.with_references({11: 0.0, 12: 0.0, 13: 0.0}, 'legacy motor zero')
     rng = np.random.default_rng(3)
     for _ in range(50):
         yaw, pitch_l, knee_l = rng.uniform(-1, 1), rng.uniform(-2, 1), rng.uniform(0.2, 2.5)

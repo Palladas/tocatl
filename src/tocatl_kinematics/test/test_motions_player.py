@@ -173,15 +173,15 @@ def test_lagging_motor_slows_the_plan_and_targets_never_lead_by_more_than_the_li
     measured = {12: trajectory.raw[12][0], 13: trajectory.raw[13][0]}
     s.step('ARMED', 0.02, measured)
     sent = []
-    for _ in range(400):  # 20 s; the hip covers 2% of each gap per tick (~0.03 rad/s < 0.1 planned)
+    for _ in range(400):  # 20 s; the hip covers 1% of each gap per tick, well short of the planned speed
         clock.t += 0.05
         out = s.step('ARMED', 0.02, dict(measured))
         assert out is not None, s.reason
         for mid, position, _ in out:
             sent.append(abs(position - measured[mid]))
-            measured[mid] += (0.02 if mid == 12 else 1.0) * (position - measured[mid])
+            measured[mid] += (0.01 if mid == 12 else 1.0) * (position - measured[mid])
     assert max(sent) <= LEAD_RAD + 1e-12
-    assert 1.0 < s.progress < 15.0  # slowed well below real time, but still advancing
+    assert 1.0 < s.progress < 16.0  # slowed below 80% of real time, but still advancing
     assert s.max_lag[0] == 12
 
 
@@ -257,7 +257,7 @@ def test_held_legs_must_sit_inside_the_envelope(session):
     from tocatl_kinematics.player import hold_violations
     raw = {12: HOMES[12] + 0.005, 13: HOMES[13] + 0.1}
     assert hold_violations(session, raw, [1], EnvelopeOffsets()) == []
-    raw[12] = HOMES[12] + 1.7
+    raw[12] = HOMES[12] + 4.4  # past the 4.32 motor-rad hip envelope (1.6 rad joint x 2.7)
     assert 'held motor 12' in hold_violations(session, raw, [1], EnvelopeOffsets())[0]
 
 
@@ -322,7 +322,7 @@ def stand_motion(**kw):
     return PlaneMotion(**values)
 
 
-STANDING = EnvelopeOffsets(hip_pitch=(-0.02, 2.6), knee=(-1.7, 2.0))
+STANDING = EnvelopeOffsets(hip_pitch=(-0.05, 7.02), knee=(-1.7, 2.0))
 
 
 def six_leg_session(joint_map):
@@ -345,16 +345,19 @@ def test_stand_places_feet_touches_down_rises_and_returns(geometry, joint_map):
     assert loaded_feet[:, 1].min() == pytest.approx(-0.20, abs=1e-9)    # body raised to stand height
     assert t.q[1][0] == pytest.approx(start[1]) and t.q[1][-1] == pytest.approx(start[1])
     hip_peak = np.abs(t.torques[12]).max()
-    assert 3.0 < hip_peak < 0.9 * 8.0                                   # ~4.9 Nm for 12 kg on six legs
+    assert 1.0 < hip_peak < 3.0               # ~4.9 Nm at the joint for 12 kg on six legs, /2.7 gearbox
     assert np.abs(t.torques[12][~t.loaded]).max() == 0.0
-    assert any('continuous rating' in w for w in t.warnings)
+    assert not t.warnings
+    heavy = plan_plane_motion(geometry, session, start, stand_motion(mass_kg=40.0), offsets=STANDING)
+    assert any('continuous rating' in w for w in heavy.warnings)
 
 
 def test_stand_refuses_loads_beyond_the_cap_and_missing_mass(geometry, joint_map):
     session, start = six_leg_session(joint_map)
-    heavy = plan_plane_motion(geometry, session, start, stand_motion(mass_kg=25.0), offsets=STANDING)
+    heavy = plan_plane_motion(geometry, session, start, stand_motion(mass_kg=50.0), offsets=STANDING)
     assert any('over 90% of the 8 Nm cap' in v for v in heavy.violations)
-    two_legs = plan_plane_motion(geometry, session, {1: start[1], 2: start[2]}, stand_motion(), offsets=STANDING)
+    two_legs = plan_plane_motion(geometry, session, {1: start[1], 2: start[2]}, stand_motion(mass_kg=30.0),
+                                 offsets=STANDING)
     assert any('on 2 legs' in v for v in two_legs.violations)
     narrow = plan_plane_motion(geometry, session, start, stand_motion(), offsets=EnvelopeOffsets())
     assert any('controller envelope' in v for v in narrow.violations)  # feet-in-air hip envelope is too small

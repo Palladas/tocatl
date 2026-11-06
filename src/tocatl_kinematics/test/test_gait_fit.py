@@ -51,12 +51,13 @@ def test_gait_starts_and_ends_in_neutral_and_keeps_stance_feet_fixed(geometry):
 
 
 def test_validation_flags_speed_cap_and_reports_shortest_period(geometry, joint_map):
+    cap = CommandLimits(max_motor_velocity_rad_s=0.5)
     fast = plan(geometry, TripodGait(heading_rad=pi / 2, period_s=2.0))
-    report = validate_trajectory(fast, geometry, joint_map)
+    report = validate_trajectory(fast, geometry, joint_map, cap)
     assert not report['ok']
     assert any('rad/s >' in v for v in report['violations'])
     slow = plan(geometry, TripodGait(heading_rad=pi / 2, period_s=report['min_feasible_period_s'] * 1.05))
-    assert validate_trajectory(slow, geometry, joint_map)['ok']
+    assert validate_trajectory(slow, geometry, joint_map, cap)['ok']
     assert report['verified'] and report['accepted_values'] == 126
 
 
@@ -97,7 +98,7 @@ def test_fit_coupling_recovers_slope(tmp_path, joint_map):
     path = recording(tmp_path / 'r.jsonl', hip, 0.5 - 0.87 * (hip - 0.8))
     result = fit.fit_coupling(fit.load_recording(path), 1, joint_map)
     assert result['knee_per_hip_raw'] == pytest.approx(-0.87)
-    assert result['coupling_raw_per_hip_rad'] == pytest.approx(0.87)  # hip sign -1, ratio 1
+    assert result['coupling_raw_per_hip_rad'] == pytest.approx(0.87 * 2.7)  # hip sign -1, ratio 2.7
     assert result['r_squared'] == pytest.approx(1.0) and not result['warnings']
     tiny = recording(tmp_path / 's.jsonl', np.linspace(0.8, 0.85, 10), np.full(10, 0.5))
     assert fit.fit_coupling(fit.load_recording(tiny), 1, joint_map)['warnings']
