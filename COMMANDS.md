@@ -229,6 +229,34 @@ ros2 topic pub --once /walk/gait std_msgs/msg/String "{data: tripod}"           
 - Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to
   `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
 
+### E7. Walk with an Xbox controller
+One-time setup on the Pi:
+- Install the joystick driver: `sudo apt install ros-jazzy-joy`.
+- **USB:** plug the pad in. It should appear as `/dev/input/js0`.
+- **Bluetooth:** run `bluetoothctl`, then `scan on`, `pair <MAC>`, `trust <MAC>`, `connect <MAC>`.
+  If the buttons come out wrong, change the `button_*` / `axis_*` parameters of `tocatl_teleop`.
+
+Run it with a C4 controller (T1), using `-p fault_response:=soften`. Use one terminal for each of
+these three:
+```bash
+ros2 run joy joy_node --ros-args -p autorepeat_rate:=20.0     # T4: reads the pad
+ros2 run tocatl_kinematics tocatl_teleop                      # T5: pad -> /cmd_vel, stop, gait, arm
+ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
+```
+
+| Pad | Action |
+|---|---|
+| **LB held** | **deadman**: it only walks while held |
+| Left stick | walk in any direction |
+| Right stick left/right | turn |
+| Right trigger | speed: 30% released, 100% pressed |
+| Start held 1 s | ARM: the body rises, then it follows the sticks |
+| B | stop: settle the feet, lower the body, disarm |
+| X | next gait (ripple, then tetrapod, then tripod), applied once the feet settle |
+| Back / Xbox button | **DISARM now**, the hard stop; a standing robot drops |
+
+If the pad stops sending for 0.25 s, the walk command goes to zero and the feet settle.
+
 ## F. Arm / disarm / stop (T3)
 ```bash
 ros2 service call /motors/enable std_srvs/srv/SetBool "{data: true}"    # ARM: the waiting motion starts
