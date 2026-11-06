@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 import threading
 import time
+from types import SimpleNamespace
 
 from tocatl_lowlevel.motor_map import MOTORS, CAN_BITRATE
 
@@ -37,6 +38,11 @@ BACKGROUND_REFRESH_FRACTION = 2 / 3
 # well inside stale_after (2026-10-27: 18-motor stands starved fault-status polling).
 STATE_REPLY_FRESH_S = 0.3
 SWEEP_S = 0.6
+HOST_ID = 0
+# Startup get-ID wiring check: frame spacing keeps a burst inside the 10-frame TX queue,
+# and replies normally arrive within a few milliseconds.
+WIRING_SPACING_S = 0.002
+WIRING_WAIT_S = 0.3
 
 
 class FairLock:
@@ -148,7 +154,7 @@ def validate_address_overrides(overrides):
 class HardwareTelemetry:
     def __init__(self, stamp_clock, channels, poll_period=0.1, stale_after=0.5,
                  interface='socketcan', can_module=None, driver_module=None,
-                 motor_id_overrides=None, motor_ids=None):
+                 motor_id_overrides=None, motor_ids=None, verify_wiring=False):
         if not all(math.isfinite(v) and v > 0 for v in (poll_period, stale_after)):
             raise ValueError('poll_period_s and telemetry_timeout_s must be positive and finite')
         available = {m.motor_id for m in MOTORS if m.bus in channels}
@@ -175,6 +181,9 @@ class HardwareTelemetry:
         self.error = ''
         self.priority_motor = None
         self.background_motors = None  # callable -> motor IDs to rotate during priority polling
+        self.id_replies = {}  # logical bus -> motor IDs that answered a get-ID probe on it
+        self.wiring = None
+        sends = {}
         try:
             for logical, channel in channels.items():
                 bus = can_module.interface.Bus(interface=interface, channel=channel,
@@ -183,6 +192,7 @@ class HardwareTelemetry:
                 def send(message, bus=bus):
                     bus.send(can_module.Message(arbitration_id=message.arbitration_id,
                              data=message.data, is_extended_id=True), timeout=0.1)
+                sends[logical] = send
                 drivers = {}
                 for motor in MOTORS:
                     if motor.bus != logical or motor.motor_id not in self.motor_ids:
@@ -193,19 +203,25 @@ class HardwareTelemetry:
                                         if address != motor.motor_id else driver)
                 self.drivers.extend(drivers.values())
                 self.notifiers.append(can_module.Notifier(
-                    bus, [lambda msg, drivers=drivers: self.receive(msg, drivers)]))
+                    bus, [lambda msg, drivers=drivers, logical=logical: self.receive(msg, drivers, logical)]))
+            if verify_wiring:
+                self.wiring = self.verify_wiring(sends, overrides)
             self.thread = threading.Thread(target=self.poll, daemon=True)
             self.thread.start()
         except Exception:
             self.close()
             raise
 
-    def receive(self, msg, drivers):
+    def receive(self, msg, drivers, logical=None):
         if (not msg.is_extended_id or msg.is_error_frame or msg.is_remote_frame
                 or len(msg.data) != 8):
             return
         motor_id = (msg.arbitration_id >> 8) & 0xff
         command = (msg.arbitration_id >> 24) & 0x1f
+        if command == 0 and (msg.arbitration_id & 0xff) == 0xFE:  # get-ID reply: 0xFE + unique ID
+            with self.lock:
+                self.id_replies.setdefault(logical, set()).add(motor_id)
+            return
         driver = drivers.get(motor_id)
         if driver is None or (msg.arbitration_id & 0xff) != driver.host_id or command not in (2, 9, 17, 21):
             return
@@ -288,6 +304,37 @@ class HardwareTelemetry:
             period = min(self.poll_period, 0.02) if priority is not None else max(self.poll_period, SWEEP_S)
             self.stop_event.wait(max(0.005 if priority is not None else 0.0,
                                      period - (time.monotonic() - started)))
+
+    def verify_wiring(self, sends, overrides, wait_s=WIRING_WAIT_S):
+        """Before polling, ask every selected motor for its ID (comm type 0, read-only: no
+        enable, mode, parameter or zero write) on every configured bus, and check each answers
+        on the bus motor_map expects. Linux names CAN adapters in the order it finds them, so a
+        reboot or a swapped USB port can move legs to another name (2026-11-02: the only
+        adapter came up as can1). Raises if a motor answers only on another bus; motors that
+        answer nowhere are reported (unpowered or unwired) and left to the freshness checks."""
+        addresses = {mid: overrides.get(mid, mid) for mid in self.motor_ids}
+        by_address = {address: mid for mid, address in addresses.items()}
+        expected = {m.motor_id: m.bus for m in MOTORS if m.motor_id in self.motor_ids}
+        for logical, send in sends.items():
+            for motor_id, address in addresses.items():
+                try:
+                    with self.tx_lock:
+                        send(SimpleNamespace(arbitration_id=(0 << 24) | (HOST_ID << 8) | address, data=bytes(8)))
+                except Exception as error:
+                    raise ValueError(f'{logical}: get-ID probe could not be sent ({error}); if no device '
+                                     'acknowledges frames, check motor power, CAN-H/L wiring and termination')
+                time.sleep(WIRING_SPACING_S)  # stay inside the 10-frame TX queue
+        time.sleep(wait_s)
+        with self.lock:
+            seen = {bus: {by_address[a] for a in ids if a in by_address} for bus, ids in self.id_replies.items()}
+        answered = {mid: sorted(bus for bus, ids in seen.items() if mid in ids) for mid in expected}
+        moved = {mid: buses for mid, buses in answered.items() if buses and expected[mid] not in buses}
+        if moved:
+            detail = ', '.join(f'{mid} on {"/".join(buses)} (expected {expected[mid]})' for mid, buses in sorted(moved.items()))
+            raise ValueError(f'CAN wiring/naming mismatch: {detail}. Adapters may have swapped names after a '
+                             'reboot: remap with canN_channel parameters (e.g. -p can0_channel:=can1) or fix the udev rule')
+        return dict(answered={mid: buses for mid, buses in answered.items() if buses},
+                    silent=sorted(mid for mid, buses in answered.items() if not buses))
 
     def snapshot(self):
         from dataclasses import replace

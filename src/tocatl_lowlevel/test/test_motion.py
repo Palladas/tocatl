@@ -580,3 +580,63 @@ def test_poll_skips_state_requests_that_command_replies_already_cover():
     assert ('state', 13) in calls and ('faultSta', 13) in calls      # no recent state
     homing = telemetry_with_samples({12: 0.05, 13: 0.05}, priority=(12, 13))
     assert ('state', 12) in homing and ('state', 13) in homing      # homing keeps full polling
+
+
+def wired_telemetry(location, motor_ids=(12, 13, 32)):
+    """HardwareTelemetry over fake buses where each motor answers get-ID only on the bus
+    named in ``location`` (motor -> logical bus, or None for silent)."""
+    from tocatl_lowlevel.hardware import HardwareTelemetry
+    sent = []
+    buses = {}
+
+    class Bus:
+        def __init__(self, channel, **kwargs):
+            self.channel, self.listeners = channel, []
+            buses[channel] = self
+        def send(self, msg, timeout=None):
+            sent.append((self.channel, msg.arbitration_id))
+            motor = msg.arbitration_id & 0xff
+            if msg.arbitration_id >> 24 == 0 and location.get(motor) == self.channel:
+                reply = NS(is_extended_id=True, is_error_frame=False, is_remote_frame=False,
+                           arbitration_id=(motor << 8) | 0xFE, data=bytes(8))
+                for listener in self.listeners:
+                    listener(reply)
+        def shutdown(self): pass
+
+    class Notifier:
+        exception = None
+        def __init__(self, bus, listeners):
+            bus.listeners.extend(listeners)
+        def stop(self): pass
+
+    class Driver:
+        host_id = 0
+        def __init__(self, motor_id, send_message):
+            self.motor_id = motor_id
+        def request_motor_state(self): pass
+        def request_parameter(self, name): pass
+
+    hw = HardwareTelemetry(lambda: None, {'can0': 'can0', 'can1': 'can1'}, motor_ids=list(motor_ids),
+                           can_module=NS(interface=NS(Bus=lambda **kw: Bus(**kw)), Notifier=Notifier,
+                                         Message=lambda **kw: NS(**kw)),
+                           driver_module=NS(CyberGearMotor=Driver), verify_wiring=True)
+    return hw, sent
+
+
+def test_wiring_check_passes_when_motors_answer_on_their_bus(monkeypatch):
+    import tocatl_lowlevel.hardware as h
+    monkeypatch.setattr(h, 'WIRING_WAIT_S', 0.01)
+    hw, sent = wired_telemetry({12: 'can0', 13: 'can0', 32: None})
+    try:
+        assert hw.wiring == {'answered': {12: ['can0'], 13: ['can0']}, 'silent': [32]}
+        assert {aid >> 24 for _, aid in sent} == {0}          # only get-ID frames: nothing written
+        assert len(sent) == 6                                  # every motor probed on every bus
+    finally:
+        hw.close()
+
+
+def test_wiring_check_refuses_swapped_adapters(monkeypatch):
+    import tocatl_lowlevel.hardware as h
+    monkeypatch.setattr(h, 'WIRING_WAIT_S', 0.01)
+    with pytest.raises(ValueError, match=r'12 on can1 \(expected can0\).*can0_channel'):
+        wired_telemetry({12: 'can1', 13: 'can1', 32: 'can0'})

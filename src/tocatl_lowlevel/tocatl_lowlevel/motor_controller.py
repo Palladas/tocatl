@@ -52,7 +52,16 @@ class MotorController(Node):
                 stale_after=self.declare_parameter('telemetry_timeout_s', 1.0).value,
                 motor_id_overrides={12: self.declare_parameter('leg1_hip_can_id', 12).value},
                 motor_ids=self.declare_parameter(
-                    'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value)
+                    'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value,
+                verify_wiring=self.declare_parameter('verify_can_wiring', True).value)
+            wiring = self.hardware.wiring
+            if wiring is not None:
+                self.get_logger().info('CAN wiring check: ' + ', '.join(
+                    f'{bus}: {sorted(m for m, b in wiring["answered"].items() if bus in b)}'
+                    for bus in buses))
+                if wiring['silent']:
+                    self.get_logger().warning(f'No get-ID reply from motors {wiring["silent"]}: '
+                                              'unpowered, unwired, or a different CAN ID')
         torque_limit = self.declare_parameter('motion_torque_limit_nm', 0.0).value
         self.motion = (HardwareMotion(self.hardware, self.commands,
                        self.declare_parameter('allow_hardware_motion', False).value,
