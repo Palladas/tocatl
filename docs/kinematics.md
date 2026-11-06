@@ -201,3 +201,58 @@ inside the feet-in-air envelope of 1.6.
 ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,4,5,6 --kind wave \
   --r-m 0.32 --z-m 0.02 --radius-m 0.08 --loops 5 --phase-deg 60 --max-speed-rad-s 1.8 --hold-s 1.0 --kp 30 --kd 2
 ```
+
+## Walking (`tocatl_walk`, Level 4)
+
+`walk.py` generates omnidirectional walking online from a body twist (vx, vy, wz). TOCATL has
+no front, so every heading and turn rate is the same gait.
+
+| Gait | Duty | Legs swinging together | Use |
+|---|---|---|---|
+| `tripod` | 0.55 | 1/3/5, then 2/4/6 | fastest; three feet carry the body |
+| `tetrapod` | 0.70 | 1+4, 2+5, 3+6 | middle |
+| `ripple` (default) | 0.85 | one leg at a time: 1 4 2 5 3 6 | slowest, most stable |
+
+**How a foot moves:**
+- A stance foot stays fixed in the world, so in the body frame it moves by −(v + ω × p).
+- A swing foot lifts on a cycloid and lands half a stance stride ahead of neutral (Raibert), so
+  the next stance is centred on neutral.
+
+**How the command is shaped:**
+- Commands are clamped to the speed limits and to `max_stride_m` per stance, then rate-limited.
+- With a zero command the gait keeps stepping until every foot is back at neutral, then stops.
+
+**Default stance:**
+- r 0.25 m from each yaw axis, the same as `stand`. Body 0.15 m below the mounting plane.
+- 3 s cycle, 4 cm step height, 6 cm stride.
+
+**Offline checks** (`feasibility`, run before anything is streamed). The walk runs at its maximum
+command in 8 directions and turning both ways. It's checked for:
+- joint limits and reach
+- yaw within the controller envelope (±0.3 rad in `motion-standing.yaml` is enough for these
+  defaults)
+- static stability: the CoM stays inside the stance polygon by at least 30 mm
+- per-motor torque: the weight is shared among stance feet (least-norm), and each joint torque is
+  divided by the joint-map ratio
+- motor speed
+
+At 16 kg every default gait passes. The tripod's peak motor torque is about 4.9 Nm, under the
+12 Nm cap thanks to the 2.7:1 hip gearbox.
+
+**The streamer (`walk_player.py`)** moves through these phases:
+1. **HOLD**, until you arm.
+2. **ENTER:** feet blend in straight lines from where they are to the stance. From resting on
+   the feet at r 0.25, the body rises with no foot sliding.
+3. **WALK.**
+4. **SETTLE**, then **EXIT:** back to the starting feet, lowering the body. Then it disarms.
+
+**How it stops:**
+- The first Ctrl-C, or `walk/stop`, stops gracefully as above.
+- A second Ctrl-C disarms at once, which drops the robot.
+- A gait change on `walk/gait` waits until the feet have settled.
+
+**Safety while streaming:**
+- It's lag-aware like `tocatl_play`, and every target is checked against the controller's
+  envelopes.
+- Each yaw must sit within 0.05 rad of its declared reference, so **declare yaw with every leg
+  pointing radially**.

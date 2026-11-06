@@ -22,6 +22,7 @@ by Pranav.
 | Home legs | [C2. Level 2 homing](#c2-level-2--homing) + [D. Homing](#d-homing) |
 | Move legs in the air (nudge, pose, circle, wave) | [C3. Level 3](#c3-level-3--feet-in-the-air) + [E. Motions](#e-motions) |
 | Stand up | [C4. Level 4](#c4-level-4--standing) + [E5. Stand](#e5-stand-level-4) |
+| Walk | [C4. Level 4](#c4-level-4--standing) + [E6. Walk](#e6-walk-level-4) |
 | Arm, disarm, or stop | [F. Arm / disarm / stop](#f-arm--disarm--stop) |
 | See status, faults, why something stopped | [G. Watch and debug](#g-watch-and-debug) |
 | Record telemetry | [G. Watch and debug](#g-watch-and-debug) |
@@ -199,6 +200,29 @@ ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,
 | `--max-speed-rad-s` | at most 5; lower is gentler |
 | `--hold-s` | hold time at the target |
 | `--kp`, `--kd` | gains; Level 3 allows at most 30 / 2, Level 4 at most 100 / 5 |
+
+### E6. Walk (Level 4)
+Needs a C4 controller (all 18 motors), every leg homed, and the yaws declared **with every leg
+pointing straight out (radial)**. Start resting on the feet at about 0.25 m from each yaw axis,
+or fully supported with the feet clear for the first runs. After the pull that added
+`tocatl_walk`, rebuild once: `colcon build --symlink-install`.
+
+Scripted walk: forward for 6 s, then turn for 6 s, then settle and sit. Dry run first:
+```bash
+ros2 run tocatl_kinematics tocatl_walk --gait ripple --script "6:0.02,0,0;6:0,0,0.08" --dry-run
+```
+Drive it live from `/cmd_vel` instead (teleop, or by hand in T3):
+```bash
+ros2 run tocatl_kinematics tocatl_walk --gait ripple
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.02}}"    # T3; Ctrl-C = stop walking
+ros2 topic pub --once /walk/stop std_msgs/msg/Empty                              # settle and sit
+ros2 topic pub --once /walk/gait std_msgs/msg/String "{data: tripod}"            # switches once settled
+```
+- Arm in T3 ([F](#f-arm--disarm--stop)). The body rises, then it walks.
+- **Stopping:** Ctrl-C once settles the feet and lowers the body, then disarms. Ctrl-C twice
+  disarms at once, which **drops** the robot.
+- Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to
+  `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
 
 ## F. Arm / disarm / stop (T3)
 ```bash

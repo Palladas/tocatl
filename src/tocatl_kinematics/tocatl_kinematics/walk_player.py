@@ -1,0 +1,452 @@
+"""Walk TOCATL: stream whole-body (yaw, hip pitch, knee) targets from the walk generator.
+
+Sequence:
+1. HOLD at the measured pose until the operator arms.
+2. ENTER: feet blend in a straight line from where they are to the walking stance. From
+   resting on the ground at the stance radius, this lifts the body without sliding the feet.
+3. WALK: follow the command (a script, or /cmd_vel from teleop).
+4. Stop: SETTLE (step until every foot is back at neutral), then EXIT (blend back to the
+   starting feet, lowering the body), hold, disarm.
+
+Stopping:
+- First Ctrl-C (or a ``walk/stop`` message) stops gracefully as above.
+- A second Ctrl-C disarms at once. Disarming drops a standing robot, so keep it supported.
+
+Before anything is published, the walk is checked offline at its maximum command, in every
+direction and turning (``walk.feasibility``), against the running controller's torque cap
+and yaw envelope. The enter/exit blends are checked against the joint limits and the
+controller envelopes.
+
+Every tick is lag-aware like tocatl_play: gait time slows as the worst motor falls behind,
+targets never lead the measured position by more than the lead, and a stall stops the walk.
+``--dry-run`` reports and exits.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import fields, replace
+import json
+import math
+import sys
+import time
+
+import numpy as np
+
+from tocatl_kinematics.body import BodyPose, body_fk, joints_from_raw
+from tocatl_kinematics.geometry import LEG_IDS, load_geometry
+from tocatl_kinematics.joint_map import load_joint_map, motor_ids
+from tocatl_kinematics.leg import KinematicsError
+from tocatl_kinematics.motions import EnvelopeOffsets
+from tocatl_kinematics.player import (ARM_TIMEOUT_S, END_HOLD_S, SLOW_FROM, STALL_RATE, STALL_S, STATE_STALE_S,
+                                      ControllerLimits, actuated_legs_from_ids, lead_for_step, query_controller,
+                                      session_inputs, undeclared_yaw_legs, _state_dict)
+from tocatl_kinematics.walk import GAITS, WalkGenerator, WalkParams, feasibility, solve
+
+BLEND_SPEED_M_S = 0.03     # enter/exit foot speed
+BLEND_MIN_S = 2.0
+TICK_S = 0.02
+COMMAND_TIMEOUT_S = 0.5    # a /cmd_vel older than this counts as zero
+YAW_RADIAL_TOLERANCE = 0.05
+
+
+def _quintic(s):
+    s = min(1.0, max(0.0, s))
+    return s ** 3 * (10 - 15 * s + 6 * s * s)
+
+
+def envelope_problems(session_map, raw: dict, offsets: EnvelopeOffsets):
+    problems = []
+    for motor_id, value in raw.items():
+        low, high = (offsets.hip_yaw, offsets.hip_pitch, offsets.knee)[motor_id % 10 - 1]
+        offset = value - session_map.references[motor_id]
+        if not low - 1e-9 <= offset <= high + 1e-9:
+            problems.append(f'motor {motor_id} target {offset:+.3f} rad from its reference, outside [{low:+.2f}, {high:+.2f}]')
+    return problems
+
+
+class WalkStreamer:
+    """Pure decision logic for each tick (the ROS node only feeds it measurements)."""
+
+    def __init__(self, geometry, session_map, params: WalkParams, raw_start: dict, commands,
+                 offsets: EnvelopeOffsets = EnvelopeOffsets(), clock=time.monotonic, lead=0.08, legs=LEG_IDS):
+        self.geometry, self.session_map, self.commands, self.offsets = geometry, session_map, commands, offsets
+        self.clock, self.lead, self.legs = clock, lead, tuple(legs)
+        self.gen = WalkGenerator(geometry, params, self.legs)
+        self.motor_ids = tuple(m for leg in self.legs for m in motor_ids(leg))
+        self.raw_start = {m: float(raw_start[m]) for m in self.motor_ids}
+        joints = joints_from_raw(session_map, self.raw_start, self.legs)
+        if set(joints) != set(self.legs):
+            raise ValueError('Every walking leg needs measured yaw, hip and knee with session references')
+        self.start_feet = {leg: np.asarray(p, float) for leg, p in body_fk(geometry, joints, BodyPose()).items()}
+        self.neutral = {leg: p.copy() for leg, p in self.gen.neutral.items()}
+        distance = max(np.linalg.norm(self.start_feet[l] - self.neutral[l]) for l in self.legs)
+        self.blend_s = max(BLEND_MIN_S, distance / BLEND_SPEED_M_S)
+        self.phase, self.reason = 'HOLD', ''
+        self.waiting_since = clock()
+        self.blend = 0.0
+        self.rate = 0.0
+        self.last_tick = self.last_advance = self.done_at = None
+        self.stop_requested = False
+        self.pending_gait = None
+        self.previous = dict(self.raw_start)
+        self.max_lag = (None, 0.0)
+
+    # --- operator inputs -------------------------------------------------------------
+    def request_stop(self):
+        self.stop_requested = True
+
+    def set_gait(self, name):
+        if name not in GAITS:
+            raise ValueError(f'gait must be one of {sorted(GAITS)}')
+        self.pending_gait = name
+
+    # --- planning helpers --------------------------------------------------------------
+    def feet_now(self):
+        if self.phase in ('HOLD',):
+            return self.start_feet
+        if self.phase == 'ENTER':
+            s = _quintic(self.blend / self.blend_s)
+            return {l: self.start_feet[l] + (self.neutral[l] - self.start_feet[l]) * s for l in self.legs}
+        if self.phase in ('EXIT', 'END'):
+            s = _quintic(self.blend / self.blend_s)
+            return {l: self.neutral[l] + (self.start_feet[l] - self.neutral[l]) * s for l in self.legs}
+        return self.gen.feet
+
+    def raw_for(self, feet):
+        solutions = solve(self.geometry, feet)
+        raw = {}
+        for leg in self.legs:
+            raw.update(zip(motor_ids(leg), self.session_map.to_raw(leg, solutions[leg].q)))
+        return raw
+
+    def blend_problems(self, samples=40):
+        """Joint-limit and envelope problems along the enter/exit blend (exit is its reverse)."""
+        problems = []
+        for i in range(samples + 1):
+            s = _quintic(i / samples)
+            feet = {l: self.start_feet[l] + (self.neutral[l] - self.start_feet[l]) * s for l in self.legs}
+            try:
+                solutions = solve(self.geometry, feet)
+            except KinematicsError as error:
+                return [f'enter/exit blend unreachable: {error}']
+            for leg, solution in solutions.items():
+                for name, value, (low, high) in zip(('yaw', 'hip_pitch', 'knee'), solution.q,
+                                                     self.geometry.leg(leg).limits.as_tuple()):
+                    if not low <= value <= high:
+                        problems.append(f'enter/exit: leg {leg} {name} {value:.3f} outside [{low:.2f}, {high:.2f}]')
+            problems += envelope_problems(self.session_map, self.raw_for(feet), self.offsets)
+        return sorted(set(problems))
+
+    def yaw_problems(self):
+        """Walking assumes each yaw was declared with its leg pointing radially."""
+        problems = []
+        for leg in self.legs:
+            yaw_id = motor_ids(leg)[0]
+            offset = self.raw_start[yaw_id] - self.session_map.references[yaw_id]
+            if abs(offset) > YAW_RADIAL_TOLERANCE:
+                problems.append(f'leg {leg} yaw is {offset:+.3f} rad from its declared (radial) reference')
+        return problems
+
+    # --- tick --------------------------------------------------------------------------
+    def lag(self, planned, measured):
+        worst = (None, 0.0)
+        for mid, target in planned.items():
+            actual = measured.get(mid)
+            gap = float('inf') if actual is None else abs(target - actual)
+            if gap > worst[1]:
+                worst = (mid, gap)
+        return worst
+
+    def playback_rate(self, lag):
+        ratio = lag / self.lead
+        return 1.0 if ratio <= SLOW_FROM else max(0.0, (1.0 - ratio) / (1.0 - SLOW_FROM))
+
+    def targets(self, raw, measured, dt):
+        out = []
+        for mid in self.motor_ids:
+            position = raw[mid]
+            velocity = (position - self.previous[mid]) / dt if dt > 0 else 0.0
+            actual = measured.get(mid)
+            if actual is not None:
+                position = min(actual + self.lead, max(actual - self.lead, position))
+            out.append((mid, position, velocity))
+        self.previous = dict(raw)
+        return out
+
+    def advance(self, dt):
+        """Move the plan forward by ``dt`` of plan time (already scaled by the rate)."""
+        if self.phase == 'ENTER':
+            self.blend = min(self.blend_s, self.blend + dt)
+            if self.blend >= self.blend_s:
+                self.phase, self.blend = 'WALK', 0.0
+        elif self.phase in ('WALK', 'SETTLE'):
+            if self.stop_requested and self.phase == 'WALK':
+                self.phase = 'SETTLE'
+            command = (0.0, 0.0, 0.0) if self.phase == 'SETTLE' or self.pending_gait else self.commands()
+            self.gen.step(dt, command)
+            if self.pending_gait and self.gen.idle():
+                feet = self.gen.feet
+                self.gen = WalkGenerator(self.geometry, replace(self.gen.params, gait=self.pending_gait), self.legs,
+                                         feet={l: p.copy() for l, p in feet.items()})
+                self.pending_gait = None
+            if self.phase == 'SETTLE' and self.gen.idle():
+                self.phase, self.blend = 'EXIT', 0.0
+        elif self.phase == 'EXIT':
+            self.blend = min(self.blend_s, self.blend + dt)
+            if self.blend >= self.blend_s:
+                self.phase = 'END'
+
+    def step(self, safety_state, state_age, measured=None):
+        """Targets to publish now, or None to stop publishing (``reason`` says why)."""
+        now = self.clock()
+        measured = measured or {}
+        if state_age is None or state_age > STATE_STALE_S:
+            return self.stop('robot_state stale; stopped publishing')
+        if self.phase == 'HOLD':
+            if safety_state == 'ARMED':
+                self.phase, self.last_tick, self.last_advance = 'ENTER', now, now
+            elif safety_state == 'FAULT':
+                return self.stop('Controller FAULT before arming')
+            elif now - self.waiting_since > ARM_TIMEOUT_S:
+                return self.stop(f'Not armed within {ARM_TIMEOUT_S:.0f} s')
+            elif self.stop_requested:
+                return self.stop('Stopped before arming')
+            else:
+                return self.targets(self.raw_start, measured, 0.0)
+        if safety_state != 'ARMED':
+            return self.stop(f'Controller left ARMED ({safety_state}) while walking')
+        dt, self.last_tick = now - self.last_tick, now
+        try:
+            planned = self.raw_for(self.feet_now())
+        except KinematicsError as error:
+            return self.stop(f'Walk target unreachable: {error}')
+        lagging = self.lag(planned, measured)
+        self.rate = self.playback_rate(lagging[1])
+        if lagging[1] != float('inf') and lagging[1] > self.max_lag[1]:
+            self.max_lag = lagging
+        if self.phase == 'END':
+            self.done_at = self.done_at or now
+            if now - self.done_at >= END_HOLD_S:
+                self.phase, self.reason = 'DONE', 'Walk complete'
+                return None
+        else:
+            if self.rate >= STALL_RATE:
+                self.last_advance = now
+            elif now - self.last_advance > STALL_S:
+                return self.stop(f'Walk stalled for {STALL_S:.0f} s in {self.phase}: motor {lagging[0]} is '
+                                 f'{lagging[1]:.3f} rad behind (lead limit {self.lead:.3f} rad)')
+            self.advance(dt * self.rate)
+        try:
+            raw = self.raw_for(self.feet_now())
+        except KinematicsError as error:
+            return self.stop(f'Walk target unreachable: {error}')
+        problems = envelope_problems(self.session_map, raw, self.offsets)
+        if problems:
+            return self.stop('Walk target outside the controller envelope: ' + '; '.join(problems[:3]))
+        return self.targets(raw, measured, dt)
+
+    def status(self):
+        vx, vy, wz = self.gen.command
+        return (f'{self.phase} {self.gen.params.gait}: v=({vx:+.3f}, {vy:+.3f}) m/s w={wz:+.3f} rad/s at '
+                f'{100 * self.rate:.0f}% speed; max lag {self.max_lag[1]:.3f} rad'
+                + (f' (motor {self.max_lag[0]})' if self.max_lag[0] else ''))
+
+    def stop(self, reason):
+        self.phase, self.reason = 'STOPPED', reason
+        return None
+
+
+def parse_script(text):
+    """'4:0.03,0,0;3:0,0,0.1' -> [(4.0, (0.03, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.1))]."""
+    steps = []
+    for part in filter(None, (p.strip() for p in text.split(';'))):
+        seconds, _, twist = part.partition(':')
+        values = tuple(float(v) for v in twist.split(','))
+        if len(values) != 3 or not 0 < float(seconds) <= 600:
+            raise ValueError(f'script step "{part}" must be seconds:vx,vy,wz')
+        steps.append((float(seconds), values))
+    if not steps:
+        raise ValueError('empty script')
+    return steps
+
+
+class ScriptCommands:
+    """Plays a parsed script against a clock, then asks for a stop."""
+
+    def __init__(self, steps, on_done, clock=time.monotonic):
+        self.steps, self.on_done, self.clock, self.started = steps, on_done, clock, None
+
+    def __call__(self):
+        now = self.clock()
+        self.started = self.started if self.started is not None else now
+        elapsed = now - self.started
+        for seconds, twist in self.steps:
+            if elapsed < seconds:
+                return twist
+            elapsed -= seconds
+        self.on_done()
+        return (0.0, 0.0, 0.0)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog='tocatl_walk', description=__doc__.splitlines()[0])
+    defaults = WalkParams()
+    for field in fields(WalkParams):
+        parser.add_argument('--' + field.name.replace('_', '-'), type=type(getattr(defaults, field.name)),
+                            default=getattr(defaults, field.name))
+    parser.add_argument('--script', help='seconds:vx,vy,wz;... (default: follow /cmd_vel until stopped)')
+    parser.add_argument('--mass-kg', type=float, default=16.0)
+    parser.add_argument('--kp', type=float, default=80.0)
+    parser.add_argument('--kd', type=float, default=4.0)
+    parser.add_argument('--max-motor-speed-rad-s', type=float, default=5.0,
+                        help="the controller's max_motor_velocity_rad_s (report/check only)")
+    parser.add_argument('--geometry', default='config/robot-geometry.json')
+    parser.add_argument('--joint-map', default='config/joint-map.json')
+    parser.add_argument('--dry-run', action='store_true')
+    return parser
+
+
+def offline_report(geometry, joint_map, params, mass, limits: ControllerLimits, max_speed):
+    return feasibility(geometry, joint_map, params, mass, torque_limit_nm=limits.torque_limit or 12.0,
+                       max_motor_speed_rad_s=max_speed, yaw_envelope=limits.offsets.hip_yaw)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        params = WalkParams(**{f.name: getattr(args, f.name) for f in fields(WalkParams)}).validate()
+        script = parse_script(args.script) if args.script else None
+        if not (0 < args.kp <= 500 and 0 <= args.kd <= 5 and 0 < args.mass_kg <= 50):
+            raise ValueError('kp must be in (0, 500], kd in [0, 5], mass in (0, 50] kg')
+        geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
+    except ValueError as error:
+        print(f'Refused: {error}', flush=True)
+        return 2
+
+    import rclpy
+    from rclpy.signals import SignalHandlerOptions
+    from geometry_msgs.msg import Twist
+    from std_msgs.msg import Empty, String
+    from std_srvs.srv import SetBool
+    from tocatl_interfaces.msg import MotorCommand, MotorTarget, RobotState
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    node = rclpy.create_node('tocatl_walk')
+    latest, twist = {}, {'value': (0.0, 0.0, 0.0), 'at': 0.0}
+    node.create_subscription(RobotState, 'robot_state', lambda m: latest.update(msg=m, at=time.monotonic()), 10)
+
+    def on_twist(msg):
+        twist.update(value=(msg.linear.x, msg.linear.y, msg.angular.z), at=time.monotonic())
+    node.create_subscription(Twist, 'cmd_vel', on_twist, 10)
+    publisher = node.create_publisher(MotorCommand, 'motor_command', 1)
+    enable = node.create_client(SetBool, 'motors/enable')
+    streamer, streaming, code = None, False, 1
+
+    def disarm():
+        try:
+            if not enable.wait_for_service(timeout_sec=1.0):
+                print('Disarm service unavailable; the command watchdog will stop the motors.', flush=True)
+                return
+            future = enable.call_async(SetBool.Request(data=False))
+            rclpy.spin_until_future_complete(node, future, timeout_sec=2.0)
+            print(f'Disarm requested: {future.result().message if future.result() else "no reply"}', flush=True)
+        except Exception as error:
+            print(f'Disarm request failed ({error}); the command watchdog will stop the motors.', flush=True)
+
+    def cmd_vel():
+        return twist['value'] if time.monotonic() - twist['at'] <= COMMAND_TIMEOUT_S else (0.0, 0.0, 0.0)
+    node.create_subscription(Empty, 'walk/stop', lambda _: streamer and streamer.request_stop(), 1)
+    node.create_subscription(String, 'walk/gait', lambda m: streamer and streamer.set_gait(m.data), 1)
+    try:
+        deadline = time.monotonic() + 5.0
+        while 'msg' not in latest and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.1)
+        if 'msg' not in latest:
+            raise ValueError('No robot_state received; is the controller running?')
+        limits = query_controller(node, rclpy)
+        legs, yaw_ids = actuated_legs_from_ids(limits.actuation_ids or ())
+        if legs != list(LEG_IDS) or len(yaw_ids) != 6:
+            raise ValueError(f'Walking needs all 18 motors actuated; the controller actuates legs {legs}, yaws {yaw_ids}')
+        if args.kp > limits.max_kp or args.kd > limits.max_kd:
+            raise ValueError(f'kp/kd exceed this profile (kp <= {limits.max_kp:g}, kd <= {limits.max_kd:g})')
+        state = _state_dict(latest['msg'])
+        missing = undeclared_yaw_legs(state, yaw_ids)
+        if missing:
+            raise ValueError(f'Declare yaw references first (legs radial): legs {missing} have none this session')
+        session_map, _, raw_start = session_inputs(state, legs, joint_map, yaw_ids)
+        report = offline_report(geometry, joint_map, params, args.mass_kg, limits, args.max_motor_speed_rad_s)
+        stopper = {}
+        commands = (ScriptCommands(script, lambda: stopper['s'].request_stop()) if script else cmd_vel)
+        streamer = stopper['s'] = WalkStreamer(geometry, session_map, params, raw_start, commands,
+                                               offsets=limits.offsets, lead=lead_for_step(limits.max_step))
+        report['blend'] = dict(seconds=streamer.blend_s, problems=streamer.blend_problems())
+        report['yaw_not_radial'] = streamer.yaw_problems()
+        report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
+                                           torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)
+        print(json.dumps(report, indent=1, default=float), flush=True)
+        problems = report['violations'] + report['blend']['problems'] + report['yaw_not_radial']
+        if problems:
+            raise ValueError('Walk rejected: ' + '; '.join(problems[:6]))
+        if args.dry_run:
+            print('Dry run: nothing published.', flush=True)
+            return 0
+        planned_at = time.monotonic()
+        while latest['at'] <= planned_at and time.monotonic() < planned_at + 1.0:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        streaming = True
+        print(f'Holding all legs. Arm to start: the body rises over {streamer.blend_s:.1f} s, then walks '
+              + ('the script' if script else 'from /cmd_vel') + '. Ctrl-C once to stop and sit, twice to disarm.',
+              flush=True)
+        last_phase, last_report, interrupts = streamer.phase, 0.0, 0
+        while True:
+            tick = time.monotonic()
+            try:
+                for _ in range(10):
+                    rclpy.spin_once(node, timeout_sec=0.0)
+                msg = latest.get('msg')
+                measured = ({m.motor_id: m.position_rad for m in msg.motors
+                             if m.telemetry_fresh and math.isfinite(m.position_rad)} if msg else {})
+                targets = streamer.step(msg.safety_state if msg else None,
+                                        time.monotonic() - latest['at'] if msg else None, measured)
+            except KeyboardInterrupt:
+                interrupts += 1
+                if interrupts >= 2 or streamer.phase == 'HOLD':
+                    raise
+                print('Stopping: settling the feet, then lowering. Ctrl-C again to disarm now.', flush=True)
+                streamer.request_stop()
+                continue
+            if streamer.phase != last_phase:
+                print(f'Phase {streamer.phase}', flush=True)
+                last_phase = streamer.phase
+            if streamer.phase not in ('HOLD',) and time.monotonic() - last_report >= 2.0:
+                print(streamer.status(), flush=True)
+                last_report = time.monotonic()
+            if targets is None:
+                print(streamer.reason, flush=True)
+                code = 0 if streamer.phase == 'DONE' else 3
+                if streamer.phase == 'DONE' or msg is not None and msg.safety_state == 'ARMED':
+                    disarm()
+                streaming = False
+                break
+            command = MotorCommand()
+            command.header.stamp = node.get_clock().now().to_msg()
+            command.motors = [MotorTarget(motor_id=mid, position_rad=pos, velocity_rad_s=vel, torque_nm=0.0,
+                                          kp=args.kp, kd=args.kd) for mid, pos, vel in targets]
+            publisher.publish(command)
+            time.sleep(max(0.0, TICK_S - (time.monotonic() - tick)))
+    except KeyboardInterrupt:
+        print('Interrupted: disarming.', flush=True)
+        if streaming:
+            disarm()
+        code = 130
+    except ValueError as error:
+        print(f'Refused: {error}', flush=True)
+        code = 2
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())
