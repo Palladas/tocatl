@@ -1,4 +1,5 @@
 """CyberGear telemetry transport with serialized access for optional motion."""
+from contextlib import contextmanager
 from dataclasses import dataclass
 import math
 import threading
@@ -41,24 +42,44 @@ SWEEP_S = 0.6
 class FairLock:
     """First-come, first-served lock. A plain Lock lets a thread that releases and
     immediately re-acquires (a motion pass taken one motor at a time) starve the
-    telemetry poll waiting for it. Not reentrant, like threading.Lock."""
+    telemetry poll waiting for it. Not reentrant, like threading.Lock.
+
+    ``prioritized()`` jumps the queue: it waits only for the current holder. The homing
+    poll uses it, because in FIFO order each of its requests queued behind every homing
+    worker's command, and fault status aged past the 0.25 s guard (2026-10-27, pair 1/4;
+    reproduced by test_homing_timing)."""
 
     def __init__(self):
         self._cond = threading.Condition(threading.Lock())
         self._next = 0
         self._serving = 0
+        self._held = False
+        self._ticket_held = False
+        self._priority_waiting = 0
 
     def acquire(self):
         with self._cond:
             ticket = self._next
             self._next += 1
-            while ticket != self._serving:
+            while ticket != self._serving or self._held or self._priority_waiting:
                 self._cond.wait()
+            self._held = self._ticket_held = True
+        return True
+
+    def acquire_priority(self):
+        with self._cond:
+            self._priority_waiting += 1
+            while self._held:
+                self._cond.wait()
+            self._priority_waiting -= 1
+            self._held, self._ticket_held = True, False
         return True
 
     def release(self):
         with self._cond:
-            self._serving += 1
+            if self._ticket_held:
+                self._serving += 1
+            self._held = self._ticket_held = False
             self._cond.notify_all()
 
     def __enter__(self):
@@ -66,6 +87,14 @@ class FairLock:
 
     def __exit__(self, *exc):
         self.release()
+
+    @contextmanager
+    def prioritized(self):
+        self.acquire_priority()
+        try:
+            yield
+        finally:
+            self.release()
 
 
 def background_per_sweep(background_count, sweep_s, refresh_s):
@@ -242,7 +271,7 @@ class HardwareTelemetry:
                 state_fresh = (priority is None and received is not None and
                                time.monotonic() - received < STATE_REPLY_FRESH_S)
                 try:
-                    with self.tx_lock:
+                    with self.tx_lock.prioritized() if priority is not None else self.tx_lock:
                         if not state_fresh:
                             driver.request_motor_state()
                         if hasattr(driver, 'request_parameter'):

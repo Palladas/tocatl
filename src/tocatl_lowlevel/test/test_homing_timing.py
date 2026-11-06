@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from tocatl_lowlevel.hardware import Sample
+from tocatl_lowlevel.hardware import FairLock, Sample
 from tocatl_lowlevel.homing import ActiveKneeHoming, HipKneeHoming, LegHomingConfig, PDCommand
 from tocatl_lowlevel.motor_map import HIP_KNEE_IDS, MOTORS
 
@@ -37,7 +37,7 @@ def profiles():
 class TimedBus:
     def __init__(self, poll_period=0.5, yaw=False):
         self.stale_after, self.poll_period = 1.5, poll_period
-        self.tx_lock = threading.Lock()
+        self.tx_lock = FairLock()  # as HardwareTelemetry
         self.priority_motor = None
         self.background_motors = None
         self.stop_event = threading.Event()
@@ -77,7 +77,7 @@ class TimedBus:
             drivers, background_index = select_drivers(self.drivers, priority, background_index, per_sweep,
                                                        background_ids)
             for driver in drivers:
-                with self.tx_lock:
+                with self.tx_lock.prioritized() if priority is not None else self.tx_lock:
                     driver.request_motor_state()
                     driver.request_parameter('faultSta')
             if priority is not None:

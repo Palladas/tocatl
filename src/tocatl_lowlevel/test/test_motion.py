@@ -468,6 +468,27 @@ def test_fair_lock_serves_waiters_in_arrival_order():
         pass
 
 
+def test_fair_lock_priority_waiter_jumps_the_queue():
+    """The homing poll must not queue behind every homing command (2026-10-27 pair 1/4)."""
+    from tocatl_lowlevel.hardware import FairLock
+    lock, order = FairLock(), []
+    lock.acquire()
+    threads = []
+    for name, enter in (('worker1', lock.acquire), ('worker2', lock.acquire), ('poll', lock.acquire_priority)):
+        t = threading.Thread(target=lambda n=name, e=enter: (e(), order.append(n), lock.release()))
+        t.start()
+        threads.append(t)
+        time.sleep(0.05)
+    lock.release()
+    for t in threads:
+        t.join(1)
+    assert order == ['poll', 'worker1', 'worker2']
+    with lock.prioritized():  # and the FIFO queue still works afterwards
+        pass
+    with lock:
+        pass
+
+
 def test_motion_pass_takes_the_can_lock_per_motor_and_extrapolates():
     """A long pass no longer holds the lock throughout, so telemetry can interleave."""
     bus = FakeBus()
