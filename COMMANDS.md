@@ -41,6 +41,17 @@ Start every terminal with [A](#a-terminal-setup).
 
 ---
 
+**Shortcuts** (in the repo, so they arrive with every pull; run from any directory):
+
+| Script | Does |
+|---|---|
+| `~/tocatl/scripts/cmds/level1.sh` | Level 1 read-only telemetry, all buses |
+| `~/tocatl/scripts/cmds/level4-walk.sh` | Level 4 controller for standing/walking (homing + motion, `fault_response:=soften`) |
+| `~/tocatl/scripts/cmds/state.sh` | one snapshot: safety, reason, motors, CAN counters |
+| `~/tocatl/scripts/cmds/teleop.sh` | Xbox controller (joy_node + tocatl_teleop) |
+
+Extra controller parameters go after the script, e.g. `level1.sh -p can_transport:=v2`.
+
 ## A. Terminal setup
 ```bash
 ssh tocatl@tocatl.local
