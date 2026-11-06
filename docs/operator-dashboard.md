@@ -65,13 +65,17 @@ Each controller start creates `~/tocatl-runs/dashboard-<profile>-<UTC stamp>/` h
 
 ## Homing all legs together
 
-**Home all selected legs** homes opposite pairs 1+4, then 2+5, then 3+6: four motors at
-once. Three legs at once (tripods 1-3-5 / 2-4-6) were tried on 2026-10-27 and removed.
-Every CAN message costs the driver 10 ms, and one lock serializes both buses, so six motors'
-fault-status feedback ages past the 0.25 s freshness limit. That was the cause of the
-robot's 22:08 and 22:12 failures, and the timing model in
-`src/tocatl_lowlevel/test/test_homing_timing.py` (run with `TOCATL_TIMING_TESTS=1`)
-reproduces it. Pairs fit, but close to the limit.
+**Home all selected legs** homes the tripods: legs 1-3-5, then 2-4-6, six motors at once
+(since 2026-11-05). The dashboard's button labels still say "pairs 1+4, 2+5, 3+6"; the
+controller decides the groups.
+
+History: tripods were tried on 2026-10-27 and removed. Every CAN message costs the driver
+10 ms, and one lock serializes all buses, so six motors' fault-status feedback aged past the
+0.25 s freshness limit (the robot's 22:08 and 22:12 failures). Opposite pairs replaced them
+until `8c0b041`'s first-come-first-served lock made even pairs miss the limit. The homing
+poll now jumps that lock's queue (`FairLock.prioritized`), and the timing model in
+`src/tocatl_lowlevel/test/test_homing_timing.py` (run with `TOCATL_TIMING_TESTS=1`), which
+now uses the production lock, passes tripods and all six legs. Not yet tested on the robot.
 
 ## Level 3 · Feet-in-air motion
 

@@ -1408,6 +1408,9 @@ class LegHomingConfig:
                 raise ValueError(f'Leg {self.leg}: stop reference outside encoder range')
 
 
+TRIPODS = ((1, 3, 5), (2, 4, 6))
+
+
 class HipKneeHoming:
     """Home hip then knee; repeated contacts are an optional commissioning mode."""
     def __init__(self, hardware, output, *, verify_repeatability=False, timeout_s=None,
@@ -1489,19 +1492,12 @@ class HipKneeHoming:
                 child.cancel()
 
     def groups(self):
-        # Opposite pairs only (4 motors at once). Three legs at once (6 motors) exceeds the
-        # 0.25 s fault-status freshness on the shared 10 ms-per-message CAN transport
-        # (2026-10-27, see test_homing_timing.py); all six legs at once fits even less.
-        remaining = set(self.selected_legs)
-        groups = []
-        for leg in self.selected_legs:
-            if leg not in remaining:
-                continue
-            opposite = (leg+2) % 6+1
-            group = (leg, opposite) if opposite in remaining else (leg,)
-            remaining.difference_update(group)
-            groups.append(group)
-        return groups
+        # Tripods: legs 1/3/5, then 2/4/6 (6 motors at once). With three buses each tripod
+        # has one leg per bus, and the homing poll jumps the CAN lock queue
+        # (FairLock.prioritized), which keeps fault status inside the 0.25 s freshness guard
+        # (test_homing_timing.py). Before that fix only opposite pairs fitted (2026-10-27).
+        groups = [tuple(leg for leg in tripod if leg in self.selected_legs) for tripod in TRIPODS]
+        return [group for group in groups if group]
 
     def run(self):
         try:

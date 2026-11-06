@@ -116,9 +116,9 @@ $CTL --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-st
 ## D. Homing (T3)
 Use this with a C2, C3 or C4 controller running, robot supported, legs clear.
 
-**Home legs one at a time** (proven on the robot). The home-all freshness failure on the leg 1/4
-pair (from `8c0b041`) is fixed in the timing model but **not yet tested on the robot**; until it
-is, keep homing one leg at a time. Home-all, once tested: `ros2 service call /motors/home std_srvs/srv/Trigger`.
+**Home legs one at a time** (proven on the robot). Home-all now runs the tripods (legs 1/3/5,
+then 2/4/6). Its freshness fix passes the timing model but is **not yet tested on the robot**;
+until it is, keep homing one leg at a time. Home-all, once tested: `ros2 service call /motors/home std_srvs/srv/Trigger`.
 ```bash
 for n in 1 2 3 4 5 6; do ros2 service call /motors/leg_$n/home std_srvs/srv/Trigger; done
 ```

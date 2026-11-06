@@ -1,7 +1,7 @@
 # All six hip-pitch/knee pairs. Yaw motors are not homed (see motors/declare_yaw_reference).
 # Stop candidates for legs 2–6 are operator-declared unloaded references.
 # Finish direction checks and loaded-stop verification before powered homing.
-# /motors/home runs opposite groups (1,4), (2,5), (3,6); individual services select one leg.
+# /motors/home runs the tripods (1,3,5) then (2,4,6); individual services select one leg.
 #
 # !! 2026-11-05: a 2.7:1 planetary gearbox now sits between each hip-pitch motor and its thigh.
 # The hip_stop_rad values below were recorded with direct drive and no longer match the raw

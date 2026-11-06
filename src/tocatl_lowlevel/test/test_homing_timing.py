@@ -3,8 +3,9 @@
 Opt-in (TOCATL_TIMING_TESTS=1): these measure wall-clock margins and are too timing
 sensitive to gate every run. On 2026-10-27 the model reproduced the robot's three-leg
 (tripod) startup failure (feedback 0.30 s vs 0.35 s on the robot) and showed three legs
-at once exceed the 0.25 s fault-status freshness in steady state, so batch homing stays
-with opposite pairs. Pairs pass, but close to the limit (worst fault age ~0.24 s).
+at once exceed the 0.25 s fault-status freshness in steady state. With the production
+FairLock it also reproduced the pair-1/4 failure after 8c0b041 (fault age 0.255-0.265 s).
+Since the homing poll jumps the lock queue (2026-11-05), tripods and all six legs pass.
 
 The other homing tests use feedback that is always fresh, which hides lock contention.
 Here a poll thread refreshes samples only as fast as the real driver can send, so a
@@ -170,8 +171,8 @@ def timed(monkeypatch):
     bus.close()
 
 
-@pytest.mark.parametrize('legs', [(1, 4), (2, 5), range(1, 7)])
-def test_pair_batches_survive_real_lock_contention(timed, tmp_path, legs):
+@pytest.mark.parametrize('legs', [(1, 3, 5), (2, 4, 6), range(1, 7)])
+def test_tripod_batches_survive_real_lock_contention(timed, tmp_path, legs):
     worker = HipKneeHoming(timed, tmp_path / 'homes.json', profiles=profiles(), legs=tuple(legs))
     # Start like the dashboard does: from the slow 0.5 s full sweep, so feedback is up to 0.5 s old.
     time.sleep(0.6)

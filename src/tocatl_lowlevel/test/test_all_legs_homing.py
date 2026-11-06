@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from tocatl_lowlevel.hardware import Sample
-from tocatl_lowlevel.homing import (HipKneeHoming, LegHomingConfig, LegReadiness,
+from tocatl_lowlevel.homing import (TRIPODS, HipKneeHoming, LegHomingConfig, LegReadiness,
                                    KneeSeekConfig, KneeSeekSequence, ActiveKneeHoming,
                                    PDCommand)
 from tocatl_lowlevel.motor_map import MOTORS, HIP_KNEE_IDS, hip_knee_ids
@@ -125,7 +125,7 @@ def test_each_leg_routes_only_its_pair_and_saves_correct_bus(leg, tmp_path, quic
     assert record['motors'][1]['config']['direction'] == profiles()[leg].knee_direction
 
 
-def test_all_six_legs_home_in_opposite_groups_and_accumulate_readiness(tmp_path, quick_contact):
+def test_all_six_legs_home_in_tripods_and_accumulate_readiness(tmp_path, quick_contact):
     hw = FakeHardware()
     worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=range(1,7))
     hw.owner = worker
@@ -135,7 +135,7 @@ def test_all_six_legs_home_in_opposite_groups_and_accumulate_readiness(tmp_path,
     assert set(worker.readiness.snapshot()[0]) == set(HIP_KNEE_IDS)
     enables = [mid // 10 for mid, action, value in hw.events if action == 'enable']
     assert set(enables) == set(range(1,7))
-    group_index = {leg: index for index, group in enumerate(((1,4),(2,5),(3,6))) for leg in group}
+    group_index = {leg: index for index, group in enumerate(TRIPODS) for leg in group}
     assert [group_index[leg] for leg in enables] == sorted(group_index[leg] for leg in enables)
     assert 51 not in {mid for mid, _, _ in hw.events}
     assert set(json.loads((tmp_path/'homes.json').read_text())['legs']) == set('123456')
@@ -143,15 +143,15 @@ def test_all_six_legs_home_in_opposite_groups_and_accumulate_readiness(tmp_path,
 
 def test_failed_leg_does_not_erase_completed_legs_or_start_later_legs(tmp_path, quick_contact):
     hw = FakeHardware()
-    hw.fail_read = 32
-    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3,4))
+    hw.fail_read = 42
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3,4,5))
     hw.owner = worker
     worker.start()
     worker.thread.join(5)
     assert not worker.thread.is_alive() and worker.faulted
-    assert set(worker.readiness.snapshot()[0]) == {12,13,22,23,42,43}
-    assert not any(mid in (52,53,62,63) for mid, _, _ in hw.events)
-    assert 'Leg 3' in worker.reason
+    assert set(worker.readiness.snapshot()[0]) == {12,13,32,33,52,53}   # tripod 1/3/5 done first
+    assert not any(mid in (62,63) for mid, _, _ in hw.events)
+    assert 'Leg 4' in worker.reason
 
 
 def test_cancel_keeps_completed_leg_ready_and_stops_before_next_enable(tmp_path, quick_contact):
@@ -162,8 +162,8 @@ def test_cancel_keeps_completed_leg_ready_and_stops_before_next_enable(tmp_path,
     worker.start()
     worker.thread.join(5)
     assert not worker.thread.is_alive() and worker.faulted
-    assert set(worker.readiness.snapshot()[0]) == {12,13}
-    assert not any(mid >= 22 and action == 'enable' for mid, action, _ in hw.events)
+    assert set(worker.readiness.snapshot()[0]) == {12,13,32,33}     # tripod 1/3 finished before leg 2
+    assert not any(mid in (22,23) and action == 'enable' for mid, action, _ in hw.events)
     assert all(s.mode == 0 for s in hw.samples.values())
 
 
@@ -345,9 +345,9 @@ def test_knee_stage_uses_relaxed_hip_pose_without_old_loaded_position_gate(tmp_p
     assert record['motors'][1]['hip_reference_rad'] == pytest.approx(profiles()[1].hip_stop+.08)
 
 
-@pytest.mark.parametrize('group', ((1,4), (2,5), (3,6)))
-def test_opposite_legs_actually_overlap_and_share_polling(group, tmp_path, quick_contact, monkeypatch):
-    barrier = threading.Barrier(2)
+@pytest.mark.parametrize('group', TRIPODS)
+def test_tripod_legs_actually_overlap_and_share_polling(group, tmp_path, quick_contact, monkeypatch):
+    barrier = threading.Barrier(3)
     hw = FakeHardware()
     class OverlapContact(VerifiedContact):
         def update(self, *args):
@@ -372,7 +372,7 @@ def test_opposite_legs_actually_overlap_and_share_polling(group, tmp_path, quick
 
 
 def test_parallel_failure_cancels_partner_and_never_starts_next_group(tmp_path, quick_contact, monkeypatch):
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(3)
     hw = FakeHardware()
     class FailingContact(VerifiedContact):
         def update(self, *args):
@@ -391,19 +391,20 @@ def test_parallel_failure_cancels_partner_and_never_starts_next_group(tmp_path, 
     assert not worker.thread.is_alive() and worker.faulted
     assert 'Injected parallel contact failure' in worker.reason
     assert not worker.readiness.snapshot()[0]
-    assert {mid//10 for mid,action,_ in hw.events if action == 'enable'} == {1,4}
+    assert {mid//10 for mid,action,_ in hw.events if action == 'enable'} == {1,3,5}
     assert all(s.mode == 0 and s.runtime_torque_limit == 12 for s in hw.samples.values())
     assert hw.priority_motor is None
 
 
-def test_partial_selections_never_pair_adjacent_legs(tmp_path):
+def test_partial_selections_follow_the_tripods(tmp_path):
     worker = HipKneeHoming(FakeHardware(), tmp_path/'homes.json', profiles=profiles(), legs=(5,1,2,3))
-    assert worker.groups() == [(5,2), (1,), (3,)]
+    assert worker.groups() == [(1,3,5), (2,)]
+    assert HipKneeHoming(FakeHardware(), tmp_path/'h.json', profiles=profiles(), legs=(4,6)).groups() == [(4,6)]
 
 
-def test_stop_recovery_cancels_opposite_leg_before_ack_recovers(tmp_path, quick_contact, monkeypatch):
+def test_stop_recovery_cancels_tripod_partners_before_ack_recovers(tmp_path, quick_contact, monkeypatch):
     hw = FakeHardware()
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(3)
     retrying = threading.Event()
     release_stop = threading.Event()
     partner_stopped = threading.Event()
@@ -421,17 +422,17 @@ def test_stop_recovery_cancels_opposite_leg_before_ack_recovers(tmp_path, quick_
     monkeypatch.setattr(ActiveKneeHoming, 'make_sequence',
                         lambda self, sample, now: FaultContact(self.config, hw))
     driver12 = next(d for d in hw.drivers if d.motor_id == 12)
-    driver42 = next(d for d in hw.drivers if d.motor_id == 42)
-    stop12, stop42 = driver12.stop, driver42.stop
+    driver32 = next(d for d in hw.drivers if d.motor_id == 32)
+    stop12, stop32 = driver12.stop, driver32.stop
     def unavailable_stop():
         if not release_stop.is_set():
             retrying.set()
             raise ValueError('Injected stop transmission failure')
         stop12()
     def observed_stop():
-        stop42()
+        stop32()
         partner_stopped.set()
-    driver12.stop, driver42.stop = unavailable_stop, observed_stop
+    driver12.stop, driver32.stop = unavailable_stop, observed_stop
     worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=range(1,7))
     hw.owner = worker
     worker.start()
@@ -440,7 +441,7 @@ def test_stop_recovery_cancels_opposite_leg_before_ack_recovers(tmp_path, quick_
         assert partner_stopped.wait(2)
         assert worker.thread.is_alive()
         assert worker.status()[1]
-        assert set(hw.priority_motor) == {12,13,42,43}
+        assert set(hw.priority_motor) == {12,13,32,33,52,53}
         with pytest.raises(ValueError, match='fault recovery'):
             worker.start()
     finally:
