@@ -219,6 +219,11 @@ ros2 topic pub --once /walk/stop std_msgs/msg/Empty                             
 ros2 topic pub --once /walk/gait std_msgs/msg/String "{data: tripod}"            # switches once settled
 ```
 - Arm in T3 ([F](#f-arm--disarm--stop)). The body rises, then it walks.
+- **Recommended for walking:** add `-p fault_response:=soften` to the C4 controller command. A
+  fault then holds every healthy motor's last target while its stiffness (kp) ramps to zero over
+  `fault_soften_s` (3 s), so the body sinks under damping instead of dropping, and then everything
+  stops. A motor that reports its own fault is stopped at once. A DISARM during softening is still
+  the immediate hard stop. Not yet tested on the robot: try it first with the robot supported.
 - **Stopping:** Ctrl-C once settles the feet and lowers the body, then disarms. Ctrl-C twice
   disarms at once, which **drops** the robot.
 - Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to

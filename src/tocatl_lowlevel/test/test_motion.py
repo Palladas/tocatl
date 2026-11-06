@@ -62,6 +62,7 @@ class FakeBus:
                                     position=HOMES[mid], velocity=0., torque=0., temperature=30., mode=0)
                         for mid in (12, 13)}
         self.fail_cap, self.fail_stop = fail_cap, fail_stop
+        self.controls = []
         self.drivers = [self.driver(mid) for mid in (12, 13)]
 
     def driver(self, motor_id):
@@ -73,6 +74,7 @@ class FakeBus:
                 bus.events.append((motor_id, 'mode'))
             def control(self, position, velocity, torque, kp, kd):
                 bus.events.append((motor_id, 'control'))
+                bus.controls.append((motor_id, position, velocity, kp, kd, time.monotonic()))
             def enable(self):
                 bus.events.append((motor_id, 'enable'))
                 bus.samples[motor_id].mode = 2
@@ -103,10 +105,10 @@ class FakeBus:
         return limit
 
 
-def armed_motion(bus, torque_limit=1.5):
+def armed_motion(bus, torque_limit=1.5, **kw):
     c = MotorCommands(motor_ids=(12, 13), max_kp=30., max_kd=2., home_offsets=OFFSETS,
                       homes=lambda: dict(HOMES))
-    motion = HardwareMotion(bus, c, allowed=True, torque_limit=torque_limit)
+    motion = HardwareMotion(bus, c, allowed=True, torque_limit=torque_limit, **kw)
     sys.modules.setdefault('CyberGearDriver', NS(RunMode=NS(OPERATION_CONTROL=1)))
     stamp = time.monotonic_ns()
     c.accept(batch(dict(HOMES), stamp), stamp + 1)
@@ -747,3 +749,62 @@ def test_v2_frames_match_the_installed_cyber_gear_driver():
         motor.stop()
         frames[name] = [(m.arbitration_id, bytes(m.data)) for m in sent]
     assert frames['v2'] == frames['stock'] and len(frames['v2']) == 6
+
+
+def test_soften_fault_response_ramps_kp_down_holding_the_pose_then_stops():
+    """Walking: a fault should lower the robot under damping, not drop it."""
+    bus = FakeBus()
+    motion, c = armed_motion(bus, fault_response='soften', soften_s=0.5)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        time.sleep(0.1)
+        faulted_at = len(bus.controls)
+        stamp = time.monotonic_ns()
+        c.received = time.monotonic() - 10  # the player went away: watchdog fault
+        assert wait_for(lambda: motion.status()[1])
+        assert 'Softening' in motion.status()[2] or 'Softened' in motion.status()[2]
+        assert wait_for(lambda: (12, 'stop') in bus.events and (13, 'stop') in bus.events, timeout=3)
+        soft = [entry for entry in bus.controls[faulted_at:] if entry[3] < 30.0]
+        assert soft, 'no softened commands were sent'
+        kps = [kp for mid, pos, vel, kp, kd, at in soft if mid == 12]
+        assert kps == sorted(kps, reverse=True) and kps[-1] < 5.0       # kp ramps down
+        assert all(kd == 2.0 and vel == 0.0 for _, _, vel, _, kd, _ in soft)  # damping kept, no velocity
+        assert all(pos == pytest.approx(HOMES[mid]) for mid, pos, *_ in soft)  # holding the last target
+        stop_at = bus.events.index((12, 'stop'))
+        assert stop_at > max(i for i, e in enumerate(bus.events) if e == (12, 'control'))
+        assert 'Softened, then stopped after fault: Motor command watchdog expired' in motion.status()[2]
+        assert motion.fault_count == 1
+    finally:
+        motion.close()
+
+
+def test_operator_disarm_cuts_softening_short_and_a_faulty_motor_stops_first():
+    from tocatl_lowlevel.motor_commands import MotorFault
+    bus = FakeBus()
+    motion, c = armed_motion(bus, fault_response='soften', soften_s=5.0)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        bus.samples[13].faults = ('Over temperature',)
+        original = bus.snapshot
+
+        def faulted_snapshot():
+            samples, error = original()
+            samples[13].faults = ('Over temperature',)
+            return samples, error
+        bus.snapshot = faulted_snapshot
+        assert wait_for(lambda: (13, 'stop') in bus.events)
+        assert (12, 'stop') not in bus.events                  # 12 is still being softened
+        started = time.monotonic()
+        motion.enable(False)                                   # the operator's hard stop
+        assert wait_for(lambda: (12, 'stop') in bus.events)
+        assert time.monotonic() - started < 1.0                # well before the 5 s ramp ends
+        stopped = bus.events.index((13, 'stop'))
+        assert (13, 'control') not in bus.events[stopped:]      # the faulty motor was never softened
+        assert (12, 'control') in bus.events[stopped:]
+    finally:
+        motion.close()
+    with pytest.raises(ValueError, match='fault_response'):
+        HardwareMotion(FakeBus(), commands(), fault_response='drop')
+    assert isinstance(MotorFault(13, 'x'), ValueError)

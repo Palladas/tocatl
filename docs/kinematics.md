@@ -256,3 +256,10 @@ At 16 kg every default gait passes. The tripod's peak motor torque is about 4.9 
   envelopes.
 - Each yaw must sit within 0.05 rad of its declared reference, so **declare yaw with every leg
   pointing radially**.
+
+**Faults while walking.** With the default `fault_response:=disable`, any controller fault
+disables every motor and a standing robot drops. With `-p fault_response:=soften` (recommended
+for walking), healthy motors keep their last targets while kp ramps to zero over
+`fault_soften_s`, with kd kept, so the body sinks slowly; then all motors stop. The walker sees
+FAULT and stops publishing. A motor reporting its own fault is stopped at once, and an operator
+DISARM still stops everything immediately.

@@ -138,7 +138,7 @@ class MotorCommands:
                     sample.fault_received is None or now - sample.fault_received >= hardware.stale_after):
                 raise ValueError(f'Motor {target.motor_id} telemetry/fault status unavailable or stale')
             if sample.faults or sample.state_faults:
-                raise ValueError(f'Motor {target.motor_id} reports a fault')
+                raise MotorFault(target.motor_id, f'Motor {target.motor_id} reports a fault')
             low, high = self.envelope(target.motor_id)
             if not low <= target.position_rad <= high:
                 raise ValueError(f'Motor {target.motor_id} target outside motor-space position envelope')
@@ -147,6 +147,17 @@ class MotorCommands:
 
 
 EXTRAPOLATE_MAX_S = 0.15
+
+
+class MotorFault(ValueError):
+    """A fault reported by one motor's own feedback; ``motor_id`` names it."""
+
+    def __init__(self, motor_id, message):
+        super().__init__(message)
+        self.motor_id = motor_id
+
+
+FAULT_RESPONSES = ('disable', 'soften')
 
 
 class Disarmed(Exception):
@@ -161,7 +172,7 @@ class HardwareMotion:
     """
 
     def __init__(self, hardware, commands, allowed=False, readiness_check=None, torque_limit=None,
-                 control_period=0.02):
+                 control_period=0.02, fault_response='disable', soften_s=3.0):
         """``torque_limit`` (Nm): verified volatile drive cap (0x700b) written and read back for
         each motor before its first enable; the original is restored only after disabled
         feedback newer than the stop is seen, otherwise the reduced cap stays in force."""
@@ -173,6 +184,19 @@ class HardwareMotion:
         # so 18 motors take ~180 ms whatever this is; v2 makes the pass ~2-4 ms and this sets
         # the update rate (0.01 s -> ~100 Hz per motor).
         self.control_period = control_period
+        # What a fault does to motors that are running. 'disable' stops them at once (a
+        # standing or walking robot drops). 'soften' keeps sending each healthy motor its last
+        # target with zero velocity for soften_s while kp ramps to zero and kd stays, so the
+        # body sinks under damping instead of falling; then every motor stops as before. A
+        # motor that reports its own fault is stopped at once, and an operator disarm during
+        # softening stops everything immediately (disarm stays the hard stop).
+        if fault_response not in FAULT_RESPONSES:
+            raise ValueError(f'fault_response must be one of {FAULT_RESPONSES}')
+        if not (isfinite(soften_s) and 0.5 <= soften_s <= 10.0):
+            raise ValueError('soften_s must be in [0.5, 10] s')
+        self.fault_response, self.soften_s = fault_response, soften_s
+        self.last_sent = {}   # motor_id -> (position, kp, kd) last written
+        self.abort_soften = threading.Event()
         self.hardware, self.commands, self.allowed = hardware, commands, allowed
         self.readiness_check = readiness_check
         self.torque_limit = torque_limit
@@ -195,6 +219,7 @@ class HardwareMotion:
                 self.requested = False
                 self.reason = 'Operator disarmed'
                 self.commands.clear()
+                self.abort_soften.set()
                 return
             if self.stop_pending:
                 raise ValueError('Motor stop is still pending')
@@ -209,6 +234,7 @@ class HardwareMotion:
             self.requested = True
             self.faulted = False
             self.reason = 'Arm requested'
+            self.abort_soften.clear()
 
     def status(self):
         with self.lock:
@@ -256,6 +282,7 @@ class HardwareMotion:
                                 else:
                                     driver.control(position, target.velocity_rad_s,
                                                    target.torque_nm, target.kp, target.kd)
+                                self.last_sent[target.motor_id] = (position, target.kp, target.kd)
                         with self.lock:
                             self.armed = True
                             self.reason = 'Executing motor-space targets'
@@ -282,6 +309,9 @@ class HardwareMotion:
                         self.requested = False
                     self.commands.clear()
                 except Exception as error:
+                    softened = self.fault_response == 'soften' and bool(touched)
+                    if softened:
+                        self.soften(touched, error)
                     touched = self.stop_motors(touched)
                     # Capped but never enabled (e.g. a later cap write failed): restore once
                     # disabled feedback arrives. Motors whose stop failed keep the cap.
@@ -293,13 +323,44 @@ class HardwareMotion:
                         self.requested = False
                         self.faulted = True
                         self.fault_count += 1
-                        self.reason = str(error) + ('; motor stop pending' if touched else '')
+                        self.reason = (('Softened, then stopped after fault: ' if softened else '') + str(error)
+                                       + ('; motor stop pending' if touched else ''))
                     self.commands.clear()
                 self.quit.wait(self.control_period)
         finally:
             self.stop_motors(touched)
             with self.lock:
                 self.armed = False
+
+    def soften(self, drivers, error):
+        """Hold the last targets while kp ramps to zero over soften_s (see fault_response)."""
+        faulty = getattr(error, 'motor_id', None)
+        with self.lock:
+            self.armed = False
+            self.requested = False
+            self.faulted = True  # published as FAULT now; counted once by the caller
+            self.reason = f'Softening for {self.soften_s:g} s after fault: {error}'
+        self.commands.clear()
+        live = [d for d in drivers if d.motor_id != faulty and d.motor_id in self.last_sent]
+        if faulty is not None:
+            try:
+                with self.hardware.tx_lock:
+                    next(d for d in drivers if d.motor_id == faulty).stop()
+            except Exception:
+                pass  # stop_motors() retries it with the others
+        start = time.monotonic()
+        while not self.quit.is_set() and not self.abort_soften.is_set():
+            fraction = (time.monotonic() - start) / self.soften_s
+            if fraction >= 1.0:
+                break
+            try:
+                for driver in live:
+                    position, kp, kd = self.last_sent[driver.motor_id]
+                    with self.hardware.tx_lock:
+                        driver.control(position, 0.0, 0.0, kp * (1.0 - fraction), kd)
+            except Exception:
+                break  # the bus is failing: stop now
+            self.quit.wait(self.control_period)
 
     def stop_motors(self, drivers):
         errors = []

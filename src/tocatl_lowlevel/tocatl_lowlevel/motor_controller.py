@@ -69,7 +69,9 @@ class MotorController(Node):
                        self.declare_parameter('allow_hardware_motion', False).value,
                        readiness_check=lambda targets: self.readiness.require(self.hardware, targets),
                        torque_limit=torque_limit or None,
-                       control_period=self.declare_parameter('control_period_s', 0.02).value)
+                       control_period=self.declare_parameter('control_period_s', 0.02).value,
+                       fault_response=self.declare_parameter('fault_response', 'disable').value,
+                       soften_s=self.declare_parameter('fault_soften_s', 3.0).value)
                        if self.hardware is not None else None)
         self.homing = None
         self.homing_was_active = False
