@@ -43,6 +43,33 @@ HOST_ID = 0
 # and replies normally arrive within a few milliseconds.
 WIRING_SPACING_S = 0.002
 WIRING_WAIT_S = 0.3
+# Transport v2 (opt-in, can_transport:=v2): CyberGearDriver sleeps 10 ms after every frame
+# (PAUSE_AFTER_SEND), which caps 18 motors at ~5 command passes per second. v2 sends the
+# driver's own frames without that sleep. A frame is ~130 us at 1 Mbit/s, so a burst can
+# briefly fill a bus's 10-frame TX queue (ENOBUFS): retry for up to TX_RETRY_S, then fail.
+# A queue that never drains (no device acknowledging, the 2026-10-25 freeze) still faults.
+TRANSPORTS = ('v1', 'v2')
+TX_RETRY_S = 0.02
+TX_RETRY_SLEEP_S = 0.0005
+
+
+def fast_motor_class(driver_module):
+    """CyberGearMotor whose _send is the driver's own, minus PAUSE_AFTER_SEND. Every frame
+    (control, enable, stop, parameter read/write, state request) is built by the driver as
+    before; set_zero_position and change_motor_id are never called by this package."""
+    base = driver_module.CyberGearMotor
+
+    class FastCyberGearMotor(base):
+        def _send(self, command, data=bytearray(8), extended_data=0, log=True):
+            self.send_message(SimpleNamespace(
+                arbitration_id=(command.value << 24) | (extended_data << 8) | self.motor_id, data=data))
+
+    return FastCyberGearMotor
+
+
+def is_tx_queue_full(error):
+    import errno
+    return getattr(error, 'error_code', None) == errno.ENOBUFS or 'No buffer space' in str(error)
 
 
 class FairLock:
@@ -154,7 +181,7 @@ def validate_address_overrides(overrides):
 class HardwareTelemetry:
     def __init__(self, stamp_clock, channels, poll_period=0.1, stale_after=0.5,
                  interface='socketcan', can_module=None, driver_module=None,
-                 motor_id_overrides=None, motor_ids=None, verify_wiring=False):
+                 motor_id_overrides=None, motor_ids=None, verify_wiring=False, transport='v1'):
         if not all(math.isfinite(v) and v > 0 for v in (poll_period, stale_after)):
             raise ValueError('poll_period_s and telemetry_timeout_s must be positive and finite')
         available = {m.motor_id for m in MOTORS if m.bus in channels}
@@ -163,6 +190,9 @@ class HardwareTelemetry:
                 any(type(mid) is not int or mid not in available for mid in selected)):
             raise ValueError('telemetry motor IDs must be unique known motors on configured buses')
         self.motor_ids = selected
+        if transport not in TRANSPORTS:
+            raise ValueError(f'can_transport must be one of {TRANSPORTS}')
+        self.transport = transport
         overrides = validate_address_overrides(motor_id_overrides)
         if can_module is None:
             import can as can_module
@@ -184,21 +214,31 @@ class HardwareTelemetry:
         self.id_replies = {}  # logical bus -> motor IDs that answered a get-ID probe on it
         self.wiring = None
         sends = {}
+        motor_class = fast_motor_class(driver_module) if transport == 'v2' else driver_module.CyberGearMotor
         try:
             for logical, channel in channels.items():
                 bus = can_module.interface.Bus(interface=interface, channel=channel,
                                                bitrate=CAN_BITRATE)
                 self.buses.append(bus)
-                def send(message, bus=bus):
-                    bus.send(can_module.Message(arbitration_id=message.arbitration_id,
-                             data=message.data, is_extended_id=True), timeout=0.1)
+                def send(message, bus=bus, logical=logical):
+                    frame = can_module.Message(arbitration_id=message.arbitration_id,
+                                               data=message.data, is_extended_id=True)
+                    deadline = time.monotonic() + (TX_RETRY_S if self.transport == 'v2' else 0.0)
+                    while True:
+                        try:
+                            bus.send(frame, timeout=0.1)
+                            return
+                        except Exception as error:
+                            if not is_tx_queue_full(error) or time.monotonic() >= deadline:
+                                raise
+                        time.sleep(TX_RETRY_SLEEP_S)
                 sends[logical] = send
                 drivers = {}
                 for motor in MOTORS:
                     if motor.bus != logical or motor.motor_id not in self.motor_ids:
                         continue
                     address = overrides.get(motor.motor_id, motor.motor_id)
-                    driver = driver_module.CyberGearMotor(motor_id=address, send_message=send)
+                    driver = motor_class(motor_id=address, send_message=send)
                     drivers[address] = (AddressedMotor(motor.motor_id, driver)
                                         if address != motor.motor_id else driver)
                 self.drivers.extend(drivers.values())

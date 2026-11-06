@@ -53,7 +53,9 @@ class MotorController(Node):
                 motor_id_overrides={12: self.declare_parameter('leg1_hip_can_id', 12).value},
                 motor_ids=self.declare_parameter(
                     'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value,
-                verify_wiring=self.declare_parameter('verify_can_wiring', True).value)
+                verify_wiring=self.declare_parameter('verify_can_wiring', True).value,
+                transport=self.declare_parameter('can_transport', 'v1').value)
+            self.get_logger().info(f'CAN transport {self.hardware.transport}')
             wiring = self.hardware.wiring
             if wiring is not None:
                 self.get_logger().info('CAN wiring check: ' + ', '.join(
@@ -66,7 +68,8 @@ class MotorController(Node):
         self.motion = (HardwareMotion(self.hardware, self.commands,
                        self.declare_parameter('allow_hardware_motion', False).value,
                        readiness_check=lambda targets: self.readiness.require(self.hardware, targets),
-                       torque_limit=torque_limit or None)
+                       torque_limit=torque_limit or None,
+                       control_period=self.declare_parameter('control_period_s', 0.02).value)
                        if self.hardware is not None else None)
         self.homing = None
         self.homing_was_active = False

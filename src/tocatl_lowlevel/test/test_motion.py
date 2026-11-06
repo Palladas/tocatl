@@ -640,3 +640,110 @@ def test_wiring_check_refuses_swapped_adapters(monkeypatch):
     monkeypatch.setattr(h, 'WIRING_WAIT_S', 0.01)
     with pytest.raises(ValueError, match=r'12 on can1 \(expected can0\).*can0_channel'):
         wired_telemetry({12: 'can1', 13: 'can1', 32: 'can0'})
+
+
+class DriverWithPause:
+    """Mirrors CyberGearDriver 0.2.0: every public call builds a frame in _send, which sleeps
+    PAUSE_AFTER_SEND (10 ms) after handing it to send_message."""
+    host_id = 0
+    sleeps = []
+
+    def __init__(self, motor_id, send_message):
+        self.motor_id, self.send_message = motor_id, send_message
+
+    def _send(self, command, data=bytearray(8), extended_data=0, log=True):
+        self.send_message(NS(arbitration_id=(command.value << 24) | (extended_data << 8) | self.motor_id, data=data))
+        DriverWithPause.sleeps.append(0.01)
+
+    def control(self, position, velocity, torque, kp, kd):
+        self._send(NS(value=1), data=b'\x01' * 8, extended_data=0x8000)
+
+    def enable(self):
+        self._send(NS(value=3))
+
+    def stop(self):
+        self._send(NS(value=4), extended_data=self.host_id)
+
+    def request_motor_state(self):
+        self._send(NS(value=2))
+
+
+def test_v2_transport_sends_the_drivers_frames_without_its_pause():
+    from tocatl_lowlevel.hardware import fast_motor_class
+    sent = []
+    DriverWithPause.sleeps = []
+    slow = DriverWithPause(12, sent.append)
+    fast = fast_motor_class(NS(CyberGearMotor=DriverWithPause))(12, sent.append)
+    for motor in (slow, fast):
+        motor.control(0.1, 0.0, 0.0, 30, 2)
+        motor.enable()
+        motor.stop()
+        motor.request_motor_state()
+    frames = [(m.arbitration_id, bytes(m.data)) for m in sent]
+    assert frames[:4] == frames[4:]                       # bit-identical frames
+    assert [f[0] >> 24 for f in frames[4:]] == [1, 3, 4, 2]
+    assert frames[4][0] == (1 << 24) | (0x8000 << 8) | 12  # torque field and motor ID in the ID
+    assert len(DriverWithPause.sleeps) == 4                # only the stock driver paused
+
+
+def test_v2_send_retries_a_briefly_full_tx_queue_then_gives_up(monkeypatch):
+    import errno
+    import tocatl_lowlevel.hardware as h
+    from tocatl_lowlevel.hardware import HardwareTelemetry
+    monkeypatch.setattr(h, 'TX_RETRY_S', 0.05)
+    full = {'left': 3}
+
+    class QueueFull(Exception):
+        error_code = errno.ENOBUFS
+
+    class Bus:
+        frames = []
+        def __init__(self, **kw): pass
+        def send(self, msg, timeout=None):
+            if full['left']:
+                full['left'] -= 1
+                raise QueueFull('Failed to transmit: No buffer space available [Error Code 105]')
+            Bus.frames.append(msg.arbitration_id)
+        def shutdown(self): pass
+
+    class Notifier:
+        exception = None
+        def __init__(self, *a): pass
+        def stop(self): pass
+
+    module = NS(interface=NS(Bus=lambda **kw: Bus(**kw)), Notifier=Notifier, Message=lambda **kw: NS(**kw))
+    hw = HardwareTelemetry(lambda: None, {'can0': 'can0'}, motor_ids=[12], can_module=module,
+                           driver_module=NS(CyberGearMotor=DriverWithPause), transport='v2', poll_period=10)
+    try:
+        driver = hw.drivers[0]
+        driver.enable()                       # three ENOBUFS, then through
+        assert Bus.frames[-1] >> 24 == 3 and full['left'] == 0
+        full['left'] = 10 ** 6                # a queue that never drains still faults
+        with pytest.raises(QueueFull):
+            driver.enable()
+    finally:
+        hw.close()
+    with pytest.raises(ValueError, match='can_transport'):
+        HardwareTelemetry(lambda: None, {'can0': 'can0'}, motor_ids=[12], can_module=module,
+                          driver_module=NS(CyberGearMotor=DriverWithPause), transport='v3')
+
+
+def test_v2_frames_match_the_installed_cyber_gear_driver():
+    """On the Pi (CyberGearDriver installed): every frame type this package sends is
+    bit-identical between the stock driver and the v2 subclass."""
+    driver_module = pytest.importorskip('CyberGearDriver')
+    if not hasattr(driver_module, 'CyberGearMotor'):  # another test's stand-in module
+        pytest.skip('CyberGearDriver not installed')
+    from tocatl_lowlevel.hardware import fast_motor_class
+    frames = {}
+    for name, cls in (('stock', driver_module.CyberGearMotor), ('v2', fast_motor_class(driver_module))):
+        sent = []
+        motor = cls(motor_id=42, send_message=sent.append)
+        motor.control(1.25, -0.5, 0.75, 80.0, 4.0)
+        motor.mode(driver_module.RunMode.OPERATION_CONTROL)
+        motor.enable()
+        motor.request_motor_state()
+        motor.request_parameter('faultSta')
+        motor.stop()
+        frames[name] = [(m.arbitration_id, bytes(m.data)) for m in sent]
+    assert frames['v2'] == frames['stock'] and len(frames['v2']) == 6

@@ -160,12 +160,19 @@ class HardwareMotion:
     timeout latch a disarm and require a new command and enable request.
     """
 
-    def __init__(self, hardware, commands, allowed=False, readiness_check=None, torque_limit=None):
+    def __init__(self, hardware, commands, allowed=False, readiness_check=None, torque_limit=None,
+                 control_period=0.02):
         """``torque_limit`` (Nm): verified volatile drive cap (0x700b) written and read back for
         each motor before its first enable; the original is restored only after disabled
         feedback newer than the stop is seen, otherwise the reduced cap stays in force."""
         if torque_limit is not None and not (isfinite(torque_limit) and 0 < torque_limit <= 12):
             raise ValueError('Motion drive torque limit must be in (0, 12] Nm')
+        if not (isfinite(control_period) and 0.005 <= control_period <= 0.1):
+            raise ValueError('control_period_s must be in [0.005, 0.1] s')
+        # Pause between command passes. With the v1 transport each frame already costs 10 ms,
+        # so 18 motors take ~180 ms whatever this is; v2 makes the pass ~2-4 ms and this sets
+        # the update rate (0.01 s -> ~100 Hz per motor).
+        self.control_period = control_period
         self.hardware, self.commands, self.allowed = hardware, commands, allowed
         self.readiness_check = readiness_check
         self.torque_limit = torque_limit
@@ -288,7 +295,7 @@ class HardwareMotion:
                         self.fault_count += 1
                         self.reason = str(error) + ('; motor stop pending' if touched else '')
                     self.commands.clear()
-                self.quit.wait(0.02)
+                self.quit.wait(self.control_period)
         finally:
             self.stop_motors(touched)
             with self.lock:
