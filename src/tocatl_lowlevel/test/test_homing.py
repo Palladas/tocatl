@@ -122,6 +122,11 @@ def test_pair_success_requires_both_disabled_saved_stages(monkeypatch, tmp_path)
         def cancel(self): pass
     monkeypatch.setattr(homing, 'BoundedHipHoming', Child)
     monkeypatch.setattr(homing, 'BoundedKneeHoming', Child)
+    frozen = hw.snapshot
+    def live():  # telemetry keeps arriving: the knee stage waits for a fresh, settled hip
+        now = time.monotonic()
+        return {mid: replace(s, received=now, fault_received=now) for mid, s in frozen()[0].items()}, ''
+    hw.snapshot = live
     pair = homing.LegPairHoming(hw, tmp_path/'pair.json')
     pair.run()
     assert calls == [12, 13]

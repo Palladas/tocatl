@@ -22,6 +22,10 @@ ROTOR_TURN_RAD = 2 * math.pi / 7.75
 
 # Longest a leg waits for fresh pair feedback before its torque-limit writes.
 PAIR_FEEDBACK_WAIT_S = 2.0
+# Before the knee stage: the released hip must report two fresh positions within
+# HIP_SETTLE_RAD of each other (raw rad; 0.0037 rad at the joint through the 2.7:1 gearbox).
+HIP_SETTLE_RAD = 0.003
+HIP_SETTLE_TIMEOUT_S = 2.0
 
 
 class StaleFeedback(ValueError):
@@ -1613,13 +1617,18 @@ class HipKneeHoming:
                 self.hardware.set_runtime_torque_limit(mid, 1.5)
             stages = ((hip_id, profile.hip_stop, profile.hip_direction),
                       (knee_id, profile.knee_stop, profile.knee_direction))
+            stage_done = None
             for mid, stop, direction in stages:
                 initial = self.hardware.snapshot()[0][mid].position
                 if time.monotonic() >= deadline:
                     raise ValueError('Homing overall timeout')
                 config = KneeSeekConfig.from_start(mid, stop, initial,
                     verify_repeatability=self.verify_repeatability, direction=direction)
-                hip_reference = (self.hardware.snapshot()[0][hip_id].position if mid == knee_id
+                # The knee stage holds the hip where it is and refuses if it is more than
+                # 0.01 rad away. Read that position from fresh feedback once the released hip
+                # has settled: under tripod contention the latest snapshot can predate the
+                # release (2026-11-07, leg 1 refused with 'hip at configured reference').
+                hip_reference = (self._settled_position(hip_id, stage_done) if mid == knee_id
                                  else float('nan'))
                 if mid == knee_id and not math.isfinite(hip_reference):
                     raise ValueError('Hip holding reference unavailable')
@@ -1641,6 +1650,7 @@ class HipKneeHoming:
                 if self.cancelled.is_set():
                     raise ValueError('Leg homing cancelled')
                 results.append(child.completed_result)
+                stage_done = time.monotonic()
             self.restore_limits(original_limits)
             original_limits.clear()
             # Both child results require fresh disabled acknowledgements and saved results.
@@ -1664,6 +1674,25 @@ class HipKneeHoming:
             except Exception as restore_error:
                 reason += f'; torque limit restore failed: {restore_error}'
             raise ValueError(f'Leg {leg}: {reason}') from error
+
+    def _settled_position(self, motor_id, after):
+        """Position from two consecutive samples received after ``after`` that agree within
+        HIP_SETTLE_RAD; raises if the motor is not fresh and still within HIP_SETTLE_TIMEOUT_S."""
+        deadline = time.monotonic()+HIP_SETTLE_TIMEOUT_S
+        last = None
+        while True:
+            sample = self.hardware.snapshot()[0][motor_id]
+            if (sample.received is not None and sample.received > after and math.isfinite(sample.position)
+                    and (last is None or sample.received > last[0])):
+                if last is not None and abs(sample.position-last[1]) <= HIP_SETTLE_RAD:
+                    return sample.position
+                last = (sample.received, sample.position)
+            if time.monotonic() >= deadline:
+                state = 'no fresh feedback' if last is None else f'last at {last[1]:.4f} rad, still moving'
+                raise ValueError(f'Hip {motor_id} not settled within {HIP_SETTLE_TIMEOUT_S} s after its '
+                                 f'release ({state}); knee homing not started')
+            if self.cancelled.wait(0.01):
+                raise ValueError('Leg homing cancelled')
 
     def restore_limits(self, originals):
         for mid, limit in originals.items():

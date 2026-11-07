@@ -532,3 +532,38 @@ def test_finished_search_never_seeks_or_records_another_contact():
         assert seq.update(stop, 0., -2.0, t, t) is None
     assert seq.phase == 'DONE'
     assert len(seq.result()['contact_positions_rad']) == 1
+
+
+def test_knee_stage_holds_the_hip_where_it_settled_not_a_stale_snapshot(tmp_path, quick_contact, monkeypatch):
+    """2026-11-07: tripod contention made the post-release hip snapshot stale, so the knee
+    stage's hip reference was >0.01 rad from the fresh hip position and leg 1 refused."""
+    import tocatl_lowlevel.homing as homing
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    hw.owner = worker
+    references = []
+    original = homing.BoundedKneeHoming.__init__
+    def spy(self, hardware, config, output, knee_hip_reference):
+        references.append(knee_hip_reference)
+        original(self, hardware, config, output, knee_hip_reference)
+    monkeypatch.setattr(homing.BoundedKneeHoming, '__init__', spy)
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    assert references == [pytest.approx(hw.samples[12].position)]
+    worker.cancel()
+
+
+def test_unsettled_hip_refuses_the_knee_stage(tmp_path):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    import itertools
+    drift = itertools.count()
+    real = hw.snapshot
+    def drifting():
+        samples, error = real()
+        samples[12] = replace(samples[12], position=samples[12].position+0.01*next(drift))
+        return samples, error
+    hw.snapshot = drifting
+    with pytest.raises(ValueError, match='not settled'):
+        worker._settled_position(12, time.monotonic()-1)
