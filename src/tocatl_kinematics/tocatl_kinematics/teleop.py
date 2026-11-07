@@ -15,8 +15,10 @@
 Velocity is only non-zero while LB is held and /joy is fresh. If no /joy arrives for
 JOY_TIMEOUT_S (pad out of range or unplugged), the node publishes zero, so the walker
 settles. Maximum speeds are tocatl_walk's; the walker clamps them again, and teleop never
-widens a limit. Button and axis numbers default to the Linux ``xpad`` driver and can be
-changed with ROS parameters (xpadneo numbers buttons differently).
+widens a limit. Button and axis numbers can be
+changed with ROS parameters. Defaults were recorded from /joy (joy_node, SDL2) on 2026-11-07 with
+an Xbox Series controller over Bluetooth (xpadneo, 9 axes, 11 buttons). Over USB (xpad, 8 axes) the
+D-pad up/down is axis 7: pass ``-p axis_dpad_y:=7``.
 """
 from __future__ import annotations
 
@@ -32,12 +34,12 @@ PUBLISH_PERIOD_S = 0.05
 
 @dataclass(frozen=True)
 class PadLayout:
-    """Indices in sensor_msgs/Joy for the Linux xpad driver."""
+    """Indices in sensor_msgs/Joy, recorded over Bluetooth (xpadneo) on 2026-11-07."""
     axis_lx: int = 0
     axis_ly: int = 1
     axis_rx: int = 3
     axis_rt: int = 5          # 1.0 released .. -1.0 pressed
-    axis_dpad_y: int = 7      # +1 up, -1 down
+    axis_dpad_y: int = 8      # +1 up, -1 down (7 over USB/xpad)
     button_b: int = 1
     button_x: int = 2
     button_lb: int = 4

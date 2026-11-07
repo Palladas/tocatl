@@ -244,9 +244,21 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
 ### E7. Walk with an Xbox controller
 One-time setup on the Pi:
 - Install the joystick driver: `sudo apt install ros-jazzy-joy`.
-- **USB:** plug the pad in. It should appear as `/dev/input/js0`.
-- **Bluetooth:** run `bluetoothctl`, then `scan on`, `pair <MAC>`, `trust <MAC>`, `connect <MAC>`.
-  If the buttons come out wrong, change the `button_*` / `axis_*` parameters of `tocatl_teleop`.
+- Add the login user to the `input` group, then log in again: `sudo usermod -aG input tocatl`.
+  Without it, `joy_node` (SDL2) can't read `/dev/input/event*` over SSH and publishes nothing.
+- **Bluetooth (paired 2026-11-07: Xbox Series pad `AC:8E:BD:64:DD:20`, driver xpadneo).**
+  It's bonded and trusted, so pressing the Xbox button reconnects it. Check it with
+  `bluetoothctl info AC:8E:BD:64:DD:20` (want `Bonded: yes`, `Connected: yes`).
+  To pair a new pad, run `bluetoothctl`, then `agent NoInputNoOutput`, `default-agent`, `scan on`.
+  Hold the pad's pair button until the logo flashes fast, then `pair <MAC>`, `trust <MAC>`,
+  `connect <MAC>`. Without the agent, pairing fails with `AuthenticationCanceled` and nothing is
+  bonded.
+- **USB:** plug the pad in. It should appear as `/dev/input/js0`. Add `-p axis_dpad_y:=7`
+  (xpad numbers the D-pad differently).
+- Check the layout: `ros2 topic echo /joy` while pressing buttons. The defaults were recorded over
+  Bluetooth: LB 4, Start 7, B 1, X 2, Back 6, D-pad up/down axis 8, left stick axes 1/0, right
+  stick axis 3, RT axis 5. If yours differ, change the `button_*` / `axis_*` parameters of
+  `tocatl_teleop`.
 
 Run it with a C4 controller (T1), using `-p fault_response:=soften`. Use one terminal for each of
 these three:

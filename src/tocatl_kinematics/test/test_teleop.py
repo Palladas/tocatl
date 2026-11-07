@@ -6,7 +6,7 @@ L = PadLayout()
 
 
 def pad(lx=0.0, ly=0.0, rx=0.0, rt=1.0, **held):
-    axes = [0.0] * 8
+    axes = [0.0] * 9
     axes[L.axis_lx], axes[L.axis_ly], axes[L.axis_rx], axes[L.axis_rt] = lx, ly, rx, rt
     buttons = [0] * 11
     for name in held:
