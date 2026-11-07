@@ -183,3 +183,24 @@ def test_body_height_steps_wait_for_settled_feet_and_move_vertically(geometry, j
     final = feet_from(geometry, session, measured)
     start = feet_from(geometry, session, raw)
     assert all(final[l] == pytest.approx(start[l], abs=1e-6) for l in start)
+
+
+def test_robot_state_with_declared_yaw_gives_the_walker_every_joint(joint_map):
+    """The controller publishes [yaw, hip, knee] per leg once yaw is declared; session_inputs
+    must then carry yaw references so every leg resolves (2026-11-07 refusal)."""
+    from tocatl_kinematics.body import joints_from_raw
+    from tocatl_kinematics.player import session_inputs
+    homes = {m: 0.1 * (m % 10) for m in ALL}
+    legs = [dict(leg=leg, homed=True, ready=True, scope='pitch_knee_yaw', motor_ids=list(motor_ids(leg)),
+                 home_positions=[homes[m] for m in motor_ids(leg)]) for leg in range(1, 7)]
+    motors = [dict(motor_id=m, fresh=True, faults=[], position=homes[m] + 0.05) for m in ALL]
+    state = dict(safety_state='DISARMED', legs=legs, motors=motors)
+    yaw_ids = [leg * 10 + 1 for leg in range(1, 7)]
+    session_map, _, raw = session_inputs(state, list(range(1, 7)), joint_map, yaw_ids)
+    assert all(y in session_map.references for y in yaw_ids)
+    assert set(joints_from_raw(session_map, raw)) == set(range(1, 7))
+    # The old message (pitch/knee only) left the yaws without references: no leg resolved.
+    for leg in legs:
+        leg['motor_ids'], leg['home_positions'] = leg['motor_ids'][1:], leg['home_positions'][1:]
+    session_map, _, raw = session_inputs(state, list(range(1, 7)), joint_map, yaw_ids)
+    assert joints_from_raw(session_map, raw) == {}

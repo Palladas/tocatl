@@ -292,9 +292,13 @@ class MotorController(Node):
         for leg_id in range(1, 7):
             leg = LegState()
             # 'pitch_knee_yaw' once this session also holds a declared yaw reference for the leg.
-            leg.leg_id, leg.scope = leg_id, 'pitch_knee_yaw' if leg_id * 10 + 1 in homes else 'pitch_knee'
-            leg.motor_ids = list(hip_knee_ids(leg_id))
-            leg.homed = all(mid in homes for mid in leg.motor_ids)
+            yaw_id = leg_id * 10 + 1
+            leg.leg_id, leg.scope = leg_id, 'pitch_knee_yaw' if yaw_id in homes else 'pitch_knee'
+            leg.homed = all(mid in homes for mid in hip_knee_ids(leg_id))
+            # With a declared yaw, publish it too ([yaw, hip, knee] and their references):
+            # walking needs every joint's session reference (2026-11-07: tocatl_walk refused
+            # 'Every walking leg needs measured yaw, hip and knee with session references').
+            leg.motor_ids = ([yaw_id] if leg.homed and yaw_id in homes else []) + list(hip_knee_ids(leg_id))
             leg.ready = bool(ready and leg.homed)
             leg.home_positions_rad = [homes[mid] for mid in leg.motor_ids] if leg.homed else []
             leg.status_reason = self.readiness.leg_reason(leg_id)

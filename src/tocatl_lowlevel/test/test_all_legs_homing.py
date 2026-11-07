@@ -668,3 +668,24 @@ def test_hip_window_can_be_switched_to_report_only(tmp_path, quick_contact):
         worker.cancel()
     with pytest.raises(ValueError, match='true or false'):
         HipKneeHoming(hw, tmp_path/'x.json', profiles=profiles(), legs=(1,), enforce_hip_window='no')
+
+
+def test_leg_status_publishes_the_declared_yaw_reference(tmp_path):
+    """tocatl_walk builds each leg's references from robot_state legs; without the yaw it
+    refused every leg (2026-11-07)."""
+    pytest.importorskip('rclpy')
+    from tocatl_interfaces.msg import RobotState
+    from tocatl_lowlevel.motor_controller import MotorController
+    readiness = LegReadiness()
+    readiness.homes.update({12: .8, 13: .7, 22: .6, 23: .5})
+    readiness.yaw.update({11: .1})
+    state = RobotState()
+    hw = FakeHardware()
+    node = NS(homing=None, motion=None, hardware=hw, readiness=NS(
+        check=lambda hardware: True, snapshot=readiness.snapshot, leg_reason=readiness.leg_reason,
+        invalidate=readiness.invalidate))
+    MotorController.add_leg_status(node, state)
+    leg1, leg2 = state.legs[0], state.legs[1]
+    assert (leg1.scope, list(leg1.motor_ids), list(leg1.home_positions_rad)) == ('pitch_knee_yaw', [11, 12, 13], [.1, .8, .7])
+    assert (leg2.scope, list(leg2.motor_ids), list(leg2.home_positions_rad)) == ('pitch_knee', [22, 23], [.6, .5])
+    assert not state.legs[2].homed and list(state.legs[2].motor_ids) == [32, 33]
