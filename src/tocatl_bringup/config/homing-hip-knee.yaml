@@ -27,6 +27,14 @@ motor_controller:
     homing.legs: [1, 2, 3, 4, 5, 6]
     homing.verify_repeatability: false
     homing.output_path: /home/tocatl/tocatl/config/hip-knee-homing.json
+    # Hip stage drive torque and contact threshold, motor side (Nm). Lower-only (<= 1.5).
+    # Through the 2.7:1 gearbox, 1.5 Nm presses the hip stop with ~3.6 Nm at the joint;
+    # ~0.6 Nm matches the old direct-drive joint force. Pick from data: each hip result
+    # records peak_seek_effort_nm (free travel). Keep the contact effort well above it, and
+    # the limit ~0.3-0.5 Nm above the contact effort. Knee stage stays 1.5 / 1.0.
+    # Hip contacts must also land inside the turn-aware 0.03 rad window of hip_stop_rad.
+    homing.hip_torque_limit_nm: 1.5
+    homing.hip_contact_effort_nm: 1.0
     homing.leg_1.hip_stop_rad: 0.6601434348058302
     homing.leg_1.knee_stop_rad: 0.977912565804532
     homing.leg_1.hip_direction: -1

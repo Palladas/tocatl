@@ -567,3 +567,77 @@ def test_unsettled_hip_refuses_the_knee_stage(tmp_path):
     hw.snapshot = drifting
     with pytest.raises(ValueError, match='not settled'):
         worker._settled_position(12, time.monotonic()-1)
+
+
+def test_hip_stage_uses_the_lower_hip_torque_and_knee_stage_restores_1_5(tmp_path, quick_contact):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,),
+                           hip_torque_limit=0.8, hip_contact_effort=0.5)
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    limits = [(mid, value) for mid, kind, value in hw.events if kind == 'limit']
+    # Hip stage on both pair motors, knee stage back to 1.5, then the originals (12) restored.
+    assert limits[:4] == [(12, 0.8), (13, 0.8), (12, 1.5), (13, 1.5)]
+    assert limits[4:] == [(12, 12.0), (13, 12.0)]
+    worker.cancel()
+
+
+@pytest.mark.parametrize('limit, effort', ((1.6, 1.0), (0.8, 0.8), (0.8, 0.0), (float('nan'), 0.5)))
+def test_hip_torque_can_only_be_lowered(limit, effort, tmp_path):
+    with pytest.raises(ValueError, match='1.5'):
+        HipKneeHoming(FakeHardware(), tmp_path/'h.json', profiles=profiles(), legs=(1,),
+                      hip_torque_limit=limit, hip_contact_effort=effort)
+    with pytest.raises(ValueError):
+        KneeSeekConfig.from_start(12, .8, 1.8, torque_limit=limit, contact_effort=effort)
+
+
+def drive_to_stop(c, start, stop):
+    """Simulated seek against a rigid stop at ``stop``; returns the sequence."""
+    seq = KneeSeekSequence(c, start, 0.)
+    position = previous = reference = start
+    torque = 0.
+    for tick in range(1, 4001):
+        now = tick*.02
+        step = max(-.004, min(.004, reference-position))
+        position = max(stop, position+step) if c.direction == -1 else min(stop, position+step)
+        velocity, previous = (position-previous)/.02, position
+        command = seq.update(position, velocity, torque, now, now)
+        if command is None:
+            break
+        reference = command.position
+        # Free motion costs 0.2 Nm of friction; at the stop the spring builds up.
+        torque = max(-c.command_torque_limit, min(c.command_torque_limit,
+                     command.kp*(reference-position)-command.kd*velocity))
+        if position != stop:
+            torque = c.direction*0.2
+        if seq.done:
+            break
+    return seq
+
+
+def test_lower_hip_torque_still_finds_the_stop_and_records_the_free_seek_effort():
+    c = KneeSeekConfig.from_start(12, .8, 1.8, direction=-1, torque_limit=0.8, contact_effort=0.5,
+                                  enforce_window=True)
+    seq = drive_to_stop(c, 1.8, .8)
+    assert seq.done
+    result = seq.result()
+    assert result['home_position_rad'] == pytest.approx(.8)
+    assert result['peak_seek_effort_nm'] == pytest.approx(0.2)
+    assert result['contact_effort_nm'] == 0.5
+
+
+def test_enforced_hip_window_refuses_a_stop_that_is_not_the_reference():
+    # Reference 0.8; the leg hits something at 1.2 (not a whole number of rotor turns away).
+    c = KneeSeekConfig.from_start(12, .8, 1.8, direction=-1, torque_limit=0.8, contact_effort=0.5,
+                                  enforce_window=True)
+    with pytest.raises(ValueError, match='outside expected stop window'):
+        drive_to_stop(c, 1.8, 1.2)
+    # A stop a whole rotor turn away (power-cycle shift) is the same stop: accepted.
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD
+    seq = drive_to_stop(c, 1.8+ROTOR_TURN_RAD, .8+ROTOR_TURN_RAD)
+    assert seq.done
+    # Knees (enforce_window False) keep normal mode's report-only behaviour.
+    knee = KneeSeekConfig.from_start(13, .8, 1.8, direction=-1)
+    assert drive_to_stop(knee, 1.8, 1.2).result()['reference_within_window'] is False

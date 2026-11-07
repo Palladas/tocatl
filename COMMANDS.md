@@ -224,6 +224,22 @@ ros2 service call /motors/tripod_246/home std_srvs/srv/Trigger
 - Only legs in the controller's `homing.legs` are homed. A tripod service homes the part of its
   tripod that is selected.
 
+**Hip homing torque** (the gearbox multiplies it 2.7× at the joint). The defaults are 1.5 Nm
+drive limit and 1.0 Nm contact threshold, motor side. To lower them for one run, add to the
+controller command:
+```bash
+-p homing.hip_torque_limit_nm:=0.8 -p homing.hip_contact_effort_nm:=0.5
+```
+- Both must satisfy contact < limit ≤ 1.5.
+- Choose from data: after any homing run, read each hip's free-travel effort. The contact
+  threshold should sit well above it.
+  ```bash
+  R=$(ls -td ~/tocatl-runs/*/ | head -1); grep -h -E '"motor_id"|peak_seek_effort_nm|contact_effort_nm|reference_within_window' $R/hip-knee-homing.motor-*2.json
+  ```
+- Hip contacts must land within 0.03 rad (turn-aware) of `hip_stop_rad`, or the hip refuses
+  with `Loaded contact outside expected stop window`. That means an obstruction, or a stop that
+  moved. Check the leg, and update `homing-hip-knee.yaml` only if the new stop is real.
+
 **One leg at a time** (proven on the robot; the fallback if a tripod run refuses):
 ```bash
 ros2 service call /motors/leg_1/home std_srvs/srv/Trigger    # wait for "Leg 1 pitch/knee READY", then leg_2, ...

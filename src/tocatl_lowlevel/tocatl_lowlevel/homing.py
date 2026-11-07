@@ -774,7 +774,7 @@ class ContactConfig:
         if not all(math.isfinite(v) for v in vals.values()):
             raise ValueError('Contact settings must be finite')
         if any(v<=0 for k,v in vals.items() if k not in
-               ('direction','expected_stop','minimum','maximum','release_duration')):
+               ('direction','expected_stop','minimum','maximum','release_duration','enforce_window')):
             raise ValueError('Contact gains/limits must be positive')
         if not -12.5<=self.minimum<self.expected_stop<self.maximum<=12.5:
             raise ValueError('Contact requires ordered encoder search bounds around the expected stop')
@@ -897,9 +897,15 @@ class KneeSeekConfig(ContactConfig):
     initial_seek_timeout: float = 25.0
     contacts_required: int = 3
     release_duration: float = 0.0
+    # Refuse a contact outside the turn-aware stop window even in normal (one-contact)
+    # mode. Hips since 2026-11-07: references are post-gearbox, and the lower hip contact
+    # threshold must not turn a mid-travel effort into an accepted 'stop'.
+    enforce_window: bool = False
 
     def __post_init__(self):
         super().__post_init__()
+        if not 0 < self.minimum_contact_effort < self.command_torque_limit:
+            raise ValueError('Contact effort must be below the drive torque limit')
         if not 0 <= self.release_duration <= 5:
             raise ValueError('Release duration must be between zero and five seconds')
         if self.motor_id not in HIP_KNEE_IDS or not 0<self.backoff<=0.1:
@@ -910,7 +916,8 @@ class KneeSeekConfig(ContactConfig):
             raise ValueError('Invalid active search repeatability')
 
     @classmethod
-    def from_start(cls, motor_id, expected_stop, position, *, verify_repeatability=False, direction=-1):
+    def from_start(cls, motor_id, expected_stop, position, *, verify_repeatability=False, direction=-1,
+                   torque_limit=1.5, contact_effort=1.0, enforce_window=False):
         """Capture a starting pose without inventing mechanical position limits.
 
         Normal homing learns the loaded stop; a previous/manual reference is
@@ -922,6 +929,10 @@ class KneeSeekConfig(ContactConfig):
         backoff, window, lead = math.radians(5), 0.03, 1.5
         if type(direction) is not int or direction not in (-1, 1):
             raise ValueError('Home direction must be +/-1')
+        # Homing never raises the drive torque above the 1.5 Nm profile; it may lower it.
+        if not (math.isfinite(torque_limit) and math.isfinite(contact_effort)
+                and 0 < contact_effort < torque_limit <= 1.5):
+            raise ValueError('Homing needs 0 < contact effort < torque limit <= 1.5 Nm')
         # No "start beyond the stop" check: across power cycles the stored stop is only
         # known modulo ROTOR_TURN_RAD, so the start's side of it cannot be inferred.
         # These are wire-format limits, not a start-derived motion corridor.
@@ -930,8 +941,9 @@ class KneeSeekConfig(ContactConfig):
         initial_timeout = max(repeat_timeout, abs(position-expected_stop)/speed+lead/speed+10.0)
         return cls(motor_id=motor_id, expected_stop=expected_stop, direction=direction,
                    minimum=minimum, maximum=maximum,
-                   reference_speed=speed, minimum_contact_effort=1.0,
-                   command_torque_limit=1.5, lead=1.5/1.75, release_duration=3.0,
+                   reference_speed=speed, minimum_contact_effort=contact_effort,
+                   command_torque_limit=torque_limit, lead=torque_limit/1.75, release_duration=3.0,
+                   enforce_window=enforce_window,
                    contacts_required=3 if verify_repeatability else 1,
                    phase_timeout=repeat_timeout, initial_seek_timeout=initial_timeout,
                    timeout=(max(6*repeat_timeout, initial_timeout+4*repeat_timeout)
@@ -959,6 +971,7 @@ class KneeSeekSequence:
         self.contacts=[]
         self.since=None
         self.done=False
+        self.peak_seek_effort=0.0   # largest |torque| while travelling freely toward the stop
 
     def update(self,position,velocity,torque,sample_time,now):
         c=self.c
@@ -1016,7 +1029,7 @@ class KneeSeekSequence:
             if max(self.positions)-min(self.positions)>c.settle_motion:
                 self.positions=[position];self.since=sample_time
             if sample_time-self.since>=c.dwell and len(self.positions)>=3:
-                if c.contacts_required > 1:
+                if c.contacts_required > 1 or c.enforce_window:
                     turns, residual = turn_offset(position, c.expected_stop)
                     if abs(residual) > c.stop_window:
                         raise ValueError(f'Loaded contact outside expected stop window: {position:.4f} is '
@@ -1039,7 +1052,12 @@ class KneeSeekSequence:
                     self.phase_started=now
                     self.reference=position
                     self.positions=[];self.since=None
-        else:self.positions=[];self.since=None
+        else:
+            self.positions=[];self.since=None
+            # Free travel only: moving toward the stop at >= half the seek speed. Pressing
+            # into the stop also passes through efforts just below the contact threshold.
+            if self.phase=='SEEK_STOP' and c.direction*velocity>=0.5*c.reference_speed:
+                self.peak_seek_effort=max(self.peak_seek_effort,abs(torque))
         return PDCommand(self.reference,c.kp,c.kd)
 
     def result(self):
@@ -1056,6 +1074,8 @@ class KneeSeekSequence:
                     contact_positions_rad=self.contacts,
                     spread_rad=max(self.contacts)-min(self.contacts),
                     independent_reapproaches=len(self.contacts)>1,
+                    peak_seek_effort_nm=self.peak_seek_effort,
+                    contact_effort_nm=self.c.minimum_contact_effort,
                     contact_verified=True, release_completed=self.c.release_duration > 0,
                     device_zero_written=False,
                     config=asdict(self.c),completed_unix_s=time.time())
@@ -1158,7 +1178,9 @@ def create_homing(node, hardware):
         return HipKneeHoming(hardware,
             node.declare_parameter('homing.output_path', 'hip-knee-homing.json').value,
             verify_repeatability=verify, profiles=profiles, legs=legs,
-            timeout_s=node.declare_parameter('homing.timeout_s', 600.0 if verify else 60.0).value)
+            timeout_s=node.declare_parameter('homing.timeout_s', 600.0 if verify else 60.0).value,
+            hip_torque_limit=float(node.declare_parameter('homing.hip_torque_limit_nm', 1.5).value),
+            hip_contact_effort=float(node.declare_parameter('homing.hip_contact_effort_nm', 1.0).value))
     if method in ('legacy_impedance', 'active_endstop', 'active_endstop_hip_hold'):
         config_type = ContactConfig if method == 'legacy_impedance' else KneeSeekConfig
         worker_type = (HeldHipKneeHoming if method == 'active_endstop_hip_hold' else
@@ -1426,9 +1448,13 @@ TRIPODS = ((1, 3, 5), (2, 4, 6))
 class HipKneeHoming:
     """Home hip then knee; repeated contacts are an optional commissioning mode."""
     def __init__(self, hardware, output, *, verify_repeatability=False, timeout_s=None,
-                 profiles=None, legs=(1,)):
+                 profiles=None, legs=(1,), hip_torque_limit=1.5, hip_contact_effort=1.0):
         if timeout_s is None:
             timeout_s = 600.0 if verify_repeatability else 60.0
+        if not (math.isfinite(hip_torque_limit) and math.isfinite(hip_contact_effort)
+                and 0 < hip_contact_effort < hip_torque_limit <= 1.5):
+            raise ValueError('homing.hip_contact_effort_nm < homing.hip_torque_limit_nm <= 1.5 required')
+        self.hip_torque_limit, self.hip_contact_effort = hip_torque_limit, hip_contact_effort
         if type(verify_repeatability) is not bool or not math.isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError('Invalid homing repeatability mode or timeout')
         self.leg_ids = tuple(legs)
@@ -1614,7 +1640,6 @@ class HipKneeHoming:
                 original_limits[mid] = self.hardware.read_runtime_torque_limit(mid)
                 if original_limits[mid] < 1.5:
                     raise ValueError(f'Motor {mid} existing torque limit below homing profile; no increase permitted')
-                self.hardware.set_runtime_torque_limit(mid, 1.5)
             stages = ((hip_id, profile.hip_stop, profile.hip_direction),
                       (knee_id, profile.knee_stop, profile.knee_direction))
             stage_done = None
@@ -1622,8 +1647,17 @@ class HipKneeHoming:
                 initial = self.hardware.snapshot()[0][mid].position
                 if time.monotonic() >= deadline:
                     raise ValueError('Homing overall timeout')
+                # Hip stage: lower drive torque and contact threshold (2.7:1 gearbox, so the
+                # motor-side 1.5 Nm pushed the hip stop ~3.6 Nm at the joint); knee: 1.5 / 1.0.
+                # Both pair motors carry the stage's limit (the stage verifies both).
+                hip_stage = mid == hip_id
+                limit = self.hip_torque_limit if hip_stage else 1.5
+                for pair_mid in pair:
+                    self.hardware.set_runtime_torque_limit(pair_mid, limit)
                 config = KneeSeekConfig.from_start(mid, stop, initial,
-                    verify_repeatability=self.verify_repeatability, direction=direction)
+                    verify_repeatability=self.verify_repeatability, direction=direction,
+                    torque_limit=limit, contact_effort=self.hip_contact_effort if hip_stage else 1.0,
+                    enforce_window=hip_stage)
                 # The knee stage holds the hip where it is and refuses if it is more than
                 # 0.01 rad away. Read that position from fresh feedback once the released hip
                 # has settled: under tripod contention the latest snapshot can predate the
