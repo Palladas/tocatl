@@ -1,0 +1,2 @@
+# Start the renaming service whenever a canable2 (gs_usb) CAN interface appears.
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="gs_usb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="tocatl-can-names.service"

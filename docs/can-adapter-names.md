@@ -10,8 +10,8 @@ TOCATL has three canable2 (gs_usb) adapters:
 
 Linux names CAN adapters in the order it finds them at boot, so the names can move. For
 example, on 2026-11-02 the only adapter plugged in came up as `can1`. All three adapters are
-the same USB device (`1d50:606f`), so only the **serial number** tells them apart. A udev rule
-can pin each serial number to its name.
+the same USB device (`1d50:606f`), so only the **serial number** tells them apart. A boot script
+pins each serial number to its name (section 3).
 
 ## 1. Detect a wrong name (already built in)
 
@@ -29,27 +29,41 @@ Point a logical bus at a different interface:
 -p can0_channel:=can1 -p can1_channel:=can0
 ```
 
-## 3. Pin the names with udev (run once on the Pi)
+## 3. Pinned names (installed on the Pi 2026-11-06)
 
-Plug in **one adapter at a time**. For each one, note which chain it's wired to, label it, and
-read its serial number:
+| Name | Legs | Adapter serial |
+|---|---|---|
+| can0 | 1, 2 | `003A00665743500D20353341` |
+| can1 | 3, 4 | `0035005C4633500E20303035` |
+| can2 | 5, 6 | `0036006D4633500E20303035` |
+
+Serials were matched to legs with a read-only get-ID probe on 2026-11-06 (only hip-yaw motors
+connected). Before the fix, Linux had named the legs 5/6 adapter `can1` and the legs 3/4 adapter `can2`.
+
+**A plain udev `NAME=` rule does not work here.** The kernel names all three adapters
+`can0`–`can2` in the same instant. Renaming one to a name another adapter still holds fails with
+`Failed to rename network interface … File exists`. That is what happened to the old
+`88-canable.rules` from 2025, which is now disabled as `88-canable.rules.disabled-20261106`.
+
+The fix uses three files in `scripts/udev/`:
+- `70-tocatl-can.rules` starts the service whenever a gs_usb interface appears.
+- `tocatl-can-names.service` waits 1 s for all adapters, then runs the script. It also runs at boot.
+- `tocatl-can-names` renames in two passes, through temporary `tcan_canN` names, so no rename
+  collides. It never renames an interface that is up.
+
+Install or update (on the Pi, from `~/tocatl`):
 
 ```bash
-for n in /sys/class/net/can*; do echo "$(basename $n): $(udevadm info -q property -p $n | grep ID_SERIAL_SHORT)"; done
+sudo install -m 755 scripts/udev/tocatl-can-names /usr/local/sbin/
+sudo install -m 644 scripts/udev/tocatl-can-names.service /etc/systemd/system/
+sudo install -m 644 scripts/udev/70-tocatl-can.rules /etc/udev/rules.d/
+sudo systemctl daemon-reload && sudo systemctl enable tocatl-can-names.service
+sudo udevadm control --reload
 ```
 
-Write `/etc/udev/rules.d/70-tocatl-can.rules` with your three serial numbers in place of the
-placeholders:
-
-```
-SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="SERIAL_FOR_LEGS_1_2", NAME="can0"
-SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="SERIAL_FOR_LEGS_3_4", NAME="can1"
-SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="SERIAL_FOR_LEGS_5_6", NAME="can2"
-```
-
-Apply it by running `sudo udevadm control --reload` and then replugging the adapters, or by
-rebooting. Check the result with `ip -br link | grep can`. After that, start a Level 1
-controller: the wiring check should list every leg on its expected bus.
+To add or replace an adapter, read its serial with
+`cat /sys/class/net/canN/device/../serial` and edit `MAP` in the script. Logs:
+`journalctl -t tocatl-can-names`.
 
 Bring the links up as described in COMMANDS.md section B. udev only sets the names; it doesn't
 set the bitrate.

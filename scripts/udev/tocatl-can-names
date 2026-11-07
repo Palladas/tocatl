@@ -1,0 +1,30 @@
+#!/bin/sh
+# Pin TOCATL CAN adapter names by USB serial number (docs/can-adapter-names.md).
+# A udev NAME= rule can't do this: the kernel names all three adapters can0..can2 at once,
+# so renaming one to a name another still holds fails ("File exists"). Rename in two passes
+# through temporary names instead. Interfaces that are up (in use) are never renamed.
+set -u
+MAP="003A00665743500D20353341=can0 0035005C4633500E20303035=can1 0036006D4633500E20303035=can2"
+
+target_for() { for pair in $MAP; do [ "${pair%%=*}" = "$1" ] && echo "${pair#*=}"; done; }
+is_up() { ip -o link show "$1" | grep -qE '[<,]UP[,>]'; }
+log() { logger -t tocatl-can-names "$*"; echo "$*"; }
+
+for path in /sys/class/net/*; do
+    name=$(basename "$path")
+    [ "$(basename "$(readlink -f "$path/device/driver" 2>/dev/null)")" = gs_usb ] || continue
+    serial=$(cat "$path/device/../serial" 2>/dev/null) || continue
+    target=$(target_for "$serial")
+    if [ -z "$target" ]; then log "$name: unknown adapter serial $serial, left as is"; continue; fi
+    [ "$name" = "$target" ] && continue
+    if is_up "$name"; then log "$name ($serial) is up; not renaming it to $target"; continue; fi
+    ip link set "$name" name "tcan_$target" || log "$name: rename to tcan_$target failed"
+done
+for path in /sys/class/net/tcan_*; do
+    [ -e "$path" ] || continue
+    name=$(basename "$path")
+    target=${name#tcan_}
+    if ip link set "$name" name "$target"; then log "$target: adapter $(cat "/sys/class/net/$target/device/../serial" 2>/dev/null)"
+    else log "$name: rename to $target failed ($target in use)"; fi
+done
+exit 0
