@@ -3,8 +3,8 @@ import pytest
 
 from tocatl_kinematics.joint_map import motor_ids
 from tocatl_kinematics.motions import EnvelopeOffsets, PlaneMotion, plan_plane_motion
-from tocatl_kinematics.perform import (CUES, READY_R_M, READY_Z_M, Performer, plan_cues, plan_enter,
-                                       ready_pose, reversed_trajectory)
+from tocatl_kinematics.perform import (CUES, READY_R_M, READY_Z_M, REST_OFFSET_RAD, Performer, plan_cues,
+                                       plan_enter, plan_fold, ready_pose, rest_pose, reversed_trajectory)
 from tocatl_kinematics.teleop import CUE_BUTTONS
 
 HOMES = {12: -0.0269, 13: 1.5795, 22: -2.4607, 23: -0.0696, 32: -0.76, 33: -0.23,
@@ -18,7 +18,7 @@ def session(joint_map):
     return joint_map.with_references(HOMES, 'test')
 
 
-def rest_pose(session):
+def folded_pose(session):
     """Folded legs near the homes, as after homing."""
     return {leg: session.raw_to_pitch_knee(leg, HOMES[leg * 10 + 2] + 0.005, HOMES[leg * 10 + 3] + 0.1) for leg in LEGS}
 
@@ -37,12 +37,12 @@ def test_teleop_buttons_only_send_known_cues():
 
 
 def test_enter_goes_to_the_ready_pose_and_stays_exit_comes_back(geometry, session):
-    enter = plan_enter(geometry, session, rest_pose(session), FEET_AIR)
+    enter = plan_enter(geometry, session, folded_pose(session), FEET_AIR)
     assert enter.ok, enter.violations
     ready = ready_pose(geometry, LEGS)
     for leg in LEGS:
         assert enter.q[leg][-1] == pytest.approx(ready[leg], abs=1e-9)
-        assert enter.q[leg][0] == pytest.approx(rest_pose(session)[leg], abs=1e-9)
+        assert enter.q[leg][0] == pytest.approx(folded_pose(session)[leg], abs=1e-9)
     exit_ = reversed_trajectory(enter)
     for mid in enter.raw:
         assert exit_.raw[mid][0] == pytest.approx(enter.raw[mid][-1])
@@ -51,7 +51,7 @@ def test_enter_goes_to_the_ready_pose_and_stays_exit_comes_back(geometry, sessio
 
 
 def test_goto_has_no_hold_or_return(geometry, session):
-    start = rest_pose(session)
+    start = folded_pose(session)
     goto = plan_plane_motion(geometry, session, start, PlaneMotion(kind='goto', r_m=READY_R_M, z_m=READY_Z_M))
     pose = plan_plane_motion(geometry, session, start, PlaneMotion(kind='pose', r_m=READY_R_M, z_m=READY_Z_M))
     assert goto.times[-1] < pose.times[-1] / 2
@@ -72,14 +72,15 @@ def rig(geometry, session):
     cues = {name: t for name, t in plan_cues(geometry, session, legs, FEET_AIR, speed=2.0,
                                              names=('wave', 'bloom')).items()}
     ids = [mid for leg in legs for mid in motor_ids(leg)[1:]] + [11, 21]
-    start = rest_pose(session)
 
     def enter_from(measured):
         q = {leg: session.raw_to_pitch_knee(leg, measured[leg * 10 + 2], measured[leg * 10 + 3]) for leg in legs}
         return plan_enter(geometry, session, q, FEET_AIR, speed=2.0), {11: measured[11], 21: measured[21]}
     clock = Clock()
-    performer = Performer(cues, enter_from, ids, kp=30.0, kd=2.0, lead=0.4, clock=clock)
+    fold = plan_fold(geometry, session, legs, FEET_AIR, speed=2.0)
+    performer = Performer(cues, enter_from, ids, kp=10.0, kd=1.0, lead=0.4, fold=fold, clock=clock)
     measured = {11: 0.1, 21: -0.1}
+    start = rest_pose(session, legs)          # resting where the fold-back puts the legs
     for leg in legs:
         measured.update(zip(motor_ids(leg)[1:], session.pitch_knee_to_raw(leg, *start[leg])))
     return performer, clock, measured
@@ -160,3 +161,29 @@ def test_yaw_is_held_throughout(rig):
     performer.request_cue('wave')
     run(performer, clock, measured, 'ARMED', 30.0)
     assert (measured[11], measured[21]) == pytest.approx(yaw)
+
+
+def test_fold_back_goes_to_the_rest_pose_even_after_re_arming_near_the_ready_pose(rig, session):
+    """2026-11-07: disarmed and re-armed with the legs still near the ready pose, B 'finished' a
+    zero-length fold-back at once and disarmed: the legs went limp without folding."""
+    performer, clock, measured = rig
+    run(performer, clock, measured, 'DISARMED', 0.1)
+    run(performer, clock, measured, 'ARMED', 30.0)
+    assert performer.phase == 'READY'
+    run(performer, clock, measured, 'DISARMED', 0.2)           # legs stay up (gearbox friction)
+    assert run(performer, clock, measured, 'ARMED', 30.0)[-1] == 'READY'   # tiny re-unfold
+    performer.take_events()
+    performer.request_stop()
+    phases = run(performer, clock, measured, 'ARMED', 30.0)
+    assert 'EXIT' in phases and phases[-1] == 'REST'
+    assert ('disarm', 'performance finished') in performer.take_events()
+    for mid in (12, 13, 22, 23):                               # folded to the stops + offset
+        assert measured[mid] == pytest.approx(session.references[mid] + REST_OFFSET_RAD, abs=1e-6)
+
+
+def test_fold_back_is_feasible_on_all_legs(geometry, session):
+    fold = plan_fold(geometry, session, LEGS, FEET_AIR)
+    assert fold.ok, fold.violations
+    ready = ready_pose(geometry, LEGS)
+    for leg in LEGS:
+        assert fold.q[leg][0] == pytest.approx(ready[leg], abs=1e-9)

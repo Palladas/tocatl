@@ -12,8 +12,9 @@ Sequence:
   to the ready pose.
 - READY: hold the ready pose. A cue on ``perform/cue`` (std_msgs/String) plays it; each cue
   starts and ends at the ready pose. Cues that arrive while another plays are ignored.
-- ``walk/stop`` (teleop B): after the current cue, EXIT folds the legs back along the enter
-  path, then the performer requests a disarm.
+- ``walk/stop`` (teleop B): after the current cue, EXIT folds the legs from the ready pose to a
+  fixed rest pose just off the homed stops (REST_OFFSET_RAD), planned at startup, then the
+  performer requests a disarm.
 - Disarm or FAULT at any time stops streaming targets and returns to REST. Stale
   robot_state, a motion stall or Ctrl-C stop the node (Ctrl-C requests a disarm first).
 
@@ -46,15 +47,26 @@ READY_Z_M = 0.02
 CUE_END_HOLD_S = 0.3
 REPLAN_MOVED_RAD = 0.02     # re-plan the enter move once a motor has moved this far while resting
 DEFAULT_SPEED_RAD_S = 1.0   # raw motor rad/s (controller cap 5)
+# Gains for every performer move (motion-feet-air.yaml allows kp <= 30, kd <= 2). Lowered from
+# 30 / 2 on 2026-11-07 (Pranav: 'reduce the kp gain significantly'). The lag-aware streamer
+# slows a move rather than faulting if a leg trails its targets.
+DEFAULT_KP = 10.0
+DEFAULT_KD = 1.0
+# Fold-back target: this far (raw rad) off each homed hip-pitch and knee stop, away from the
+# stop (homing directions are -1, so +). A fixed pose, not the pose at arming: re-arming with the
+# legs still near the ready pose made the old reversed-unfold fold-back zero length (2026-11-07).
+REST_OFFSET_RAD = 0.10
 
-# name -> PlaneMotion overrides. All circles are centred on the ready pose.
+# name -> PlaneMotion overrides. All circles are centred on the ready pose. Sizes raised on
+# 2026-11-07 (radius 0.04 -> 0.10 m, bloom 0.42/+0.10 -> 0.45/+0.15, reach -0.08 -> -0.10):
+# all pass the planner with the 2026-11-07 references; reach at z -0.12 leaves hip 12's envelope.
 CUES = {
-    'wave': dict(kind='wave', radius_m=0.04, loops=2, phase_deg=60.0),          # ripple around the body
-    'wave_reverse': dict(kind='wave', radius_m=0.04, loops=2, phase_deg=-60.0),  # the other way round
-    'circle': dict(kind='circle', radius_m=0.04, loops=2),                      # all feet together
-    'alternate': dict(kind='wave', radius_m=0.04, loops=2, phase_deg=180.0),    # tripods in antiphase
-    'bloom': dict(kind='pose', r_m=0.42, z_m=0.10, hold_s=1.5),                 # reach out and up
-    'reach': dict(kind='pose', r_m=0.30, z_m=-0.08, hold_s=1.0),                # point the feet down
+    'wave': dict(kind='wave', radius_m=0.10, loops=1, phase_deg=60.0),          # ripple around the body
+    'wave_reverse': dict(kind='wave', radius_m=0.10, loops=1, phase_deg=-60.0),  # the other way round
+    'circle': dict(kind='circle', radius_m=0.10, loops=1),                      # all feet together
+    'alternate': dict(kind='wave', radius_m=0.10, loops=1, phase_deg=180.0),    # tripods in antiphase
+    'bloom': dict(kind='pose', r_m=0.45, z_m=0.15, hold_s=1.5),                 # reach out and up
+    'reach': dict(kind='pose', r_m=0.30, z_m=-0.10, hold_s=1.0),                # point the feet down
 }
 
 
@@ -82,6 +94,18 @@ def plan_enter(geometry, session, start, offsets, speed=DEFAULT_SPEED_RAD_S, dt=
     return plan_plane_motion(geometry, session, start, motion, offsets=offsets)
 
 
+def rest_pose(session, legs):
+    """{leg: (hip_pitch, knee)} REST_OFFSET_RAD off each homed stop (session references)."""
+    return {leg: session.raw_to_pitch_knee(leg, session.references[leg * 10 + 2] + REST_OFFSET_RAD,
+                                           session.references[leg * 10 + 3] + REST_OFFSET_RAD)
+            for leg in legs}
+
+
+def plan_fold(geometry, session, legs, offsets, speed=DEFAULT_SPEED_RAD_S, dt=0.05):
+    """Ready pose -> rest pose: the unfold from the rest pose, played backwards."""
+    return reversed_trajectory(plan_enter(geometry, session, rest_pose(session, legs), offsets, speed, dt))
+
+
 def reversed_trajectory(trajectory: PlaneTrajectory) -> PlaneTrajectory:
     """The same path played backwards (exit = enter reversed, ending at the pose it started from)."""
     return replace(trajectory, q={leg: values[::-1].copy() for leg, values in trajectory.q.items()},
@@ -96,11 +120,12 @@ class Performer:
     ``plan_enter(measured) -> (trajectory, hold)`` plans the unfold from a measured pose
     ({motor_id: raw}); ``hold`` is {motor_id: raw} for actuated motors that only hold (yaw).
     ``cues``: {name: trajectory} planned from the ready pose (only feasible ones).
+    ``fold``: the fold-back, ready pose -> fixed rest pose.
     """
 
-    def __init__(self, cues, plan_enter, motor_ids_, kp, kd, lead, clock=time.monotonic,
+    def __init__(self, cues, plan_enter, motor_ids_, kp, kd, lead, fold, clock=time.monotonic,
                  end_hold=CUE_END_HOLD_S):
-        self.cues, self.plan_enter_fn = dict(cues), plan_enter
+        self.cues, self.plan_enter_fn, self.fold = dict(cues), plan_enter, fold
         self.motor_ids = tuple(sorted(motor_ids_))
         self.kp, self.kd, self.lead, self.clock, self.end_hold = kp, kd, lead, clock, end_hold
         self.phase = 'REST'
@@ -158,7 +183,7 @@ class Performer:
             if self.enter is None:
                 return self._clamped({mid: measured.get(mid) for mid in self.motor_ids}, measured)
             trajectory, hold, _ = self.enter
-            self.exit = (reversed_trajectory(trajectory), hold)
+            self.exit = (self.fold, hold)
             self.ready_targets = {mid: float(values[-1]) for mid, values in trajectory.raw.items()}
             self.ready_targets.update(hold)
             return self._play('ENTER', 'enter', trajectory, hold, safety_state, state_age, measured)
@@ -260,8 +285,8 @@ def build_parser():
     parser.add_argument('--speed', type=float, default=DEFAULT_SPEED_RAD_S,
                         help=f'peak raw motor speed in rad/s (default {DEFAULT_SPEED_RAD_S}, cap '
                              f'{CONTROLLER_MAX_SPEED_RAD_S})')
-    parser.add_argument('--kp', type=float, default=30.0)
-    parser.add_argument('--kd', type=float, default=2.0)
+    parser.add_argument('--kp', type=float, default=DEFAULT_KP, help=f'default {DEFAULT_KP:g} (profile max 30)')
+    parser.add_argument('--kd', type=float, default=DEFAULT_KD, help=f'default {DEFAULT_KD:g} (profile max 2)')
     parser.add_argument('--geometry', default='config/robot-geometry.json')
     parser.add_argument('--joint-map', default='config/joint-map.json')
     parser.add_argument('--dry-run', action='store_true', help='plan and report only; publish nothing')
@@ -334,9 +359,15 @@ def main(argv=None):
         if missing_yaw:
             raise ValueError(f'Declare yaw references first: legs {missing_yaw} have none this session')
         cues = plan_cues(geometry, session_map, legs, limits.offsets, args.speed)
+        fold = plan_fold(geometry, session_map, legs, limits.offsets, args.speed)
         report = cue_report(cues)
         print(json.dumps(dict(legs=legs, held_yaw=yaw_ids, ready_pose_m=[READY_R_M, READY_Z_M],
-                              speed_rad_s=args.speed, cues=report), indent=1), flush=True)
+                              speed_rad_s=args.speed, kp=args.kp, kd=args.kd,
+                              fold_back=dict(ok=fold.ok, duration_s=round(float(fold.times[-1]), 1),
+                                             rest_offset_rad=REST_OFFSET_RAD, violations=fold.violations),
+                              cues=report), indent=1), flush=True)
+        if not fold.ok:
+            raise ValueError('Fold-back rejected: ' + '; '.join(fold.violations))
         feasible = {name: t for name, t in cues.items() if t.ok}
         if not feasible:
             raise ValueError('No cue passed the planner checks')
@@ -352,7 +383,7 @@ def main(argv=None):
             return (plan_enter(geometry, session_map, start, limits.offsets, args.speed),
                     {mid: measured[mid] for mid in yaw_ids})
         performer = Performer(feasible, enter_from, pitch_knee_ids + list(yaw_ids), args.kp, args.kd,
-                              lead_for_step(limits.max_step))
+                              lead_for_step(limits.max_step), fold)
         node.create_subscription(String, 'perform/cue', lambda m: performer.request_cue(m.data.strip()), 10)
         node.create_subscription(Empty, 'walk/stop', lambda m: performer.request_stop(), 10)
         print(f'Ready: cues {sorted(feasible)}. Arm (teleop: hold Start 1 s) to unfold to the ready pose; '

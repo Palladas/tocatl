@@ -394,13 +394,17 @@ ground.** Hip pitch and knee only; the yaws stay unpowered (Level 3). Never run 
 | **LB held** + RB | `circle`: all feet circle together |
 | **LB held** + left-stick click | `alternate`: the two tripods circle in antiphase |
 | **LB held** + right-stick click | `wave_reverse`: the ripple runs the other way |
-| B | fold back along the unfold path after the current cue, then disarm |
+| B | after the current cue, fold back to the rest pose (0.10 rad off each homed stop), then disarm |
 | Back / Xbox button | **DISARM now**: the legs go limp |
 
 - Cues only fire while LB is held. A cue that arrives while another is playing is ignored.
 - `reach` (feet point down) has no button. Run it with
   `ros2 topic pub --once /perform/cue std_msgs/msg/String "{data: reach}"`.
 - `--speed` sets the peak raw motor speed (default 1.0 rad/s, cap 5). Start slower, e.g. `--speed 0.5`.
+- Gains: `--kp 10 --kd 1` by default (the profile allows up to 30 / 2). Lower is softer; a leg that
+  trails its targets slows the move rather than faulting it.
+- Sizes: circles of radius 0.10 m (one loop), bloom to r 0.45 m / z +0.15 m, reach to z −0.10 m.
+  The dry run prints each cue's duration and the fold-back's.
 - A disarm or fault goes back to REST. The next arm unfolds again from wherever the legs are.
 
 The same steps without the scripts (C3 controller in T1):
