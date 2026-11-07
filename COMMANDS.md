@@ -317,7 +317,8 @@ ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,
 | `--loops` | 1–5 |
 | `--max-speed-rad-s` | at most 5; lower is gentler |
 | `--hold-s` | hold time at the target |
-| `--kp`, `--kd` | gains; Level 3 allows at most 30 / 2, Level 4 at most 100 / 5 |
+| `--kp`, `--kd` | gains for every motor; Level 3 allows at most 30 / 2, Level 4 at most 100 / 5 |
+| `--kp-yaw`, `--kp-hip`, `--kp-knee` (and `--kd-…`) | per-joint overrides of `--kp` / `--kd`; also on `tocatl_walk` and `tocatl_perform` |
 
 ### E6. Walk (Level 4)
 Needs a C4 controller (all 18 motors), every leg homed, and the yaws declared **with every leg
@@ -353,6 +354,40 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
     those, and only at the start body height. The D-pad only changes height in the start gait.
 - Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to
   `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
+
+**Gains** (motor kp/kd; there is no integral term). The default is `--kp 80 --kd 4` on every motor.
+Set each joint on its own with:
+```bash
+ros2 run tocatl_kinematics tocatl_walk --gait tripod --kp 80 --kd 4 --kp-hip 40 --kd-hip 2 --kp-knee 60 --dry-run
+```
+- The 2.7:1 gearbox makes a hip kp about 7.3× stiffer at the joint than the same kp on a knee.
+- Gains above the profile (Level 4: kp 100, kd 5) are refused. To go higher, add e.g.
+  `-p max_motor_kp:=150` to the controller.
+- The dry run prints the gains it will use (`gains`).
+
+**Faster: longer steps and a shorter cycle (tuning).** Speed = stride ÷ stance time. Longer
+strides need more hip-yaw swing than the ±0.3 rad envelope in `motion-standing.yaml`, so widen it
+for the run on the controller. The walker reads the controller's envelope and checks against it.
+```bash
+~/tocatl/scripts/cmds/level4-walk.sh -p "hip_yaw_home_offset_rad:=[-0.5,0.5]"      # T1 (re-home, declare yaw)
+ros2 run tocatl_kinematics tocatl_walk --gait tripod --period-s 2.0 --max-stride-m 0.12 \
+  --max-vx-m-s 0.12 --max-vy-m-s 0.12 --dry-run                                     # T2: check ok
+~/tocatl/scripts/cmds/teleop.sh -p max_vx_m_s:=0.12 -p max_vy_m_s:=0.12            # T4: let the sticks ask for it
+```
+
+Simulated tripod, 16 kg, at the maximum command in every direction plus turning:
+
+| Cycle | Stride | Top speed | Yaw needed | Peak hip motor speed | Peak torque |
+|---|---|---|---|---|---|
+| 3 s | 0.08 m | 4.8 cm/s | ±0.32 rad | 2.5 rad/s | 6.1 Nm |
+| 3 s | 0.12 m | 7.3 cm/s | ±0.47 rad | 2.9 rad/s | 9.5 Nm |
+| 2 s | 0.10 m | 9.1 cm/s | ±0.37 rad | 4.0 rad/s | 7.0 Nm |
+| 2 s | 0.12 m | 10.9 cm/s | ±0.44 rad | 4.2 rad/s | 8.4 Nm |
+| 2 s | 0.14 m | 12.7 cm/s | ±0.50 rad | 4.5 rad/s | 9.7 Nm |
+| 2 s | 0.16 m | 14.5 cm/s | ±0.58 rad | 4.8 rad/s | 11.1 Nm ✗ (knee over 90% of 12 Nm) |
+
+The torques are static estimates, so faster swings add load these numbers don't include.
+Increase in small steps, and watch the knee torque, temperatures, and whether the feet still clear.
 
 ### E7. Walk with an Xbox controller
 Pairing, checking the pad and checking the button layout are in [J2](#j2-xbox-pad). Press the

@@ -48,7 +48,8 @@ from tocatl_kinematics.joint_map import load_joint_map, motor_ids
 from tocatl_kinematics.leg import KinematicsError
 from tocatl_kinematics.motions import EnvelopeOffsets
 from tocatl_kinematics.player import (ARM_TIMEOUT_S, END_HOLD_S, SLOW_FROM, STALL_RATE, STALL_S, STATE_STALE_S,
-                                      ControllerLimits, actuated_legs_from_ids, lead_for_step, query_controller,
+                                      ControllerLimits, actuated_legs_from_ids, add_gain_arguments,
+                                      check_gains_against, joint_gains, lead_for_step, query_controller,
                                       session_inputs, undeclared_yaw_legs, _state_dict)
 from tocatl_kinematics.walk import GAITS, WalkGenerator, WalkParams, feasibility, solve
 
@@ -403,8 +404,7 @@ def build_parser():
                             default=getattr(defaults, field.name))
     parser.add_argument('--script', help='seconds:vx,vy,wz;... (default: follow /cmd_vel until stopped)')
     parser.add_argument('--mass-kg', type=float, default=16.0)
-    parser.add_argument('--kp', type=float, default=80.0)
-    parser.add_argument('--kd', type=float, default=4.0)
+    add_gain_arguments(parser, 80.0, 4.0)
     parser.add_argument('--max-motor-speed-rad-s', type=float, default=5.0,
                         help="the controller's max_motor_velocity_rad_s (report/check only)")
     parser.add_argument('--geometry', default='config/robot-geometry.json')
@@ -423,8 +423,9 @@ def main(argv=None):
     try:
         params = WalkParams(**{f.name: getattr(args, f.name) for f in fields(WalkParams)}).validate()
         script = parse_script(args.script) if args.script else None
-        if not (0 < args.kp <= 500 and 0 <= args.kd <= 5 and 0 < args.mass_kg <= 50):
-            raise ValueError('kp must be in (0, 500], kd in [0, 5], mass in (0, 50] kg')
+        gains = joint_gains(args)
+        if not 0 < args.mass_kg <= 50:
+            raise ValueError('mass must be in (0, 50] kg')
         geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
     except ValueError as error:
         print(f'Refused: {error}', flush=True)
@@ -487,8 +488,7 @@ def main(argv=None):
         legs, yaw_ids = actuated_legs_from_ids(limits.actuation_ids or ())
         if legs != list(LEG_IDS) or len(yaw_ids) != 6:
             raise ValueError(f'Walking needs all 18 motors actuated; the controller actuates legs {legs}, yaws {yaw_ids}')
-        if args.kp > limits.max_kp or args.kd > limits.max_kd:
-            raise ValueError(f'kp/kd exceed this profile (kp <= {limits.max_kp:g}, kd <= {limits.max_kd:g})')
+        check_gains_against(gains, limits, limits.actuation_ids)
         state = _state_dict(latest['msg'])
         missing = undeclared_yaw_legs(state, yaw_ids)
         if missing:
@@ -527,6 +527,7 @@ def main(argv=None):
         streamer.allow_gaits(gaits_ok)
         report['gaits'] = dict(allowed=list(streamer.gaits), rejected=gaits_rejected)
         report['yaw_not_radial'] = streamer.yaw_problems()
+        report['gains'] = {j: dict(kp=gains[i][0], kd=gains[i][1]) for i, j in enumerate(('yaw', 'hip', 'knee'), 1)}
         report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
                                            torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)
         print(json.dumps(report, indent=1, default=float), flush=True)
@@ -582,7 +583,8 @@ def main(argv=None):
             command = MotorCommand()
             command.header.stamp = node.get_clock().now().to_msg()
             command.motors = [MotorTarget(motor_id=mid, position_rad=pos, velocity_rad_s=vel, torque_nm=0.0,
-                                          kp=args.kp, kd=args.kd) for mid, pos, vel in targets]
+                                          kp=gains[mid % 10][0], kd=gains[mid % 10][1])
+                              for mid, pos, vel in targets]
             publisher.publish(command)
             time.sleep(max(0.0, TICK_S - (time.monotonic() - tick)))
     except KeyboardInterrupt:

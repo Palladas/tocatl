@@ -259,3 +259,20 @@ def test_direction_changes_take_effect_within_a_fraction_of_a_second(geometry):
         if gen.command[0] <= gen.clamp((-0.05, 0.0, 0.0))[0] + 1e-9:
             break
     assert tick * 0.02 <= 0.3                            # full reversal (was 2 s at 0.05 m/s^2)
+
+
+def test_per_joint_gains_default_to_kp_kd_and_are_checked_against_the_profile():
+    import argparse
+    from tocatl_kinematics.player import ControllerLimits, add_gain_arguments, check_gains_against, joint_gains
+    parser = argparse.ArgumentParser()
+    add_gain_arguments(parser, 80.0, 4.0)
+    gains = joint_gains(parser.parse_args(['--kp-hip', '30', '--kd-knee', '2']))
+    assert gains == {1: (80.0, 4.0), 2: (30.0, 4.0), 3: (80.0, 2.0)}
+    with pytest.raises(ValueError, match='knee'):
+        joint_gains(parser.parse_args(['--kd-knee', '9']))
+    limits = ControllerLimits(max_kp=30.0, max_kd=2.0)
+    check_gains_against(joint_gains(parser.parse_args(['--kp', '30', '--kd', '2'])), limits, [12, 13])
+    with pytest.raises(ValueError, match='hip kp 40'):
+        check_gains_against(joint_gains(parser.parse_args(['--kp', '30', '--kd', '2', '--kp-hip', '40'])), limits, [12, 13])
+    # Yaw over the profile is fine when no yaw motor is actuated (Level 3).
+    check_gains_against(joint_gains(parser.parse_args(['--kp', '30', '--kd', '2', '--kp-yaw', '99'])), limits, [12, 13])

@@ -39,8 +39,8 @@ from tocatl_kinematics.joint_map import load_joint_map, motor_ids
 from tocatl_kinematics.motions import (CONTROLLER_MAX_SPEED_RAD_S, EnvelopeOffsets, PlaneMotion, PlaneTrajectory,
                                        plan_plane_motion, plane_ik)
 from tocatl_kinematics.player import (STATE_STALE_S, ControllerLimits, Streamer, actuated_legs_from_ids,
-                                      lead_for_step, query_controller, session_inputs, undeclared_yaw_legs,
-                                      _state_dict)
+                                      add_gain_arguments, check_gains_against, joint_gains, lead_for_step,
+                                      query_controller, session_inputs, undeclared_yaw_legs, _state_dict)
 
 # Feet in each leg's plane: r out from the yaw axis, z up from the mounting plane. Every
 # target in r 0.15-0.45 m, z -0.10..+0.15 m passed the planner on all six legs with the
@@ -301,8 +301,7 @@ def build_parser():
     parser.add_argument('--speed', type=float, default=DEFAULT_SPEED_RAD_S,
                         help=f'peak raw motor speed in rad/s (default {DEFAULT_SPEED_RAD_S}, cap '
                              f'{CONTROLLER_MAX_SPEED_RAD_S})')
-    parser.add_argument('--kp', type=float, default=DEFAULT_KP, help=f'default {DEFAULT_KP:g} (profile max 30)')
-    parser.add_argument('--kd', type=float, default=DEFAULT_KD, help=f'default {DEFAULT_KD:g} (profile max 2)')
+    add_gain_arguments(parser, DEFAULT_KP, DEFAULT_KD)
     parser.add_argument('--geometry', default='config/robot-geometry.json')
     parser.add_argument('--joint-map', default='config/joint-map.json')
     parser.add_argument('--dry-run', action='store_true', help='plan and report only; publish nothing')
@@ -319,8 +318,7 @@ def main(argv=None):
     try:
         if not 0 < args.speed <= CONTROLLER_MAX_SPEED_RAD_S:
             raise ValueError(f'--speed must be in (0, {CONTROLLER_MAX_SPEED_RAD_S}]')
-        if not (0 < args.kp <= 500 and 0 <= args.kd <= 5):
-            raise ValueError('kp must be in (0, 500] and kd in [0, 5]')
+        gains = joint_gains(args)
         geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
     except ValueError as error:
         print(f'Refused: {error}', flush=True)
@@ -366,9 +364,7 @@ def main(argv=None):
         if not limits.actuation_ids:
             raise ValueError('The controller actuates no motors')
         legs, yaw_ids = actuated_legs_from_ids(limits.actuation_ids)
-        if args.kp > limits.max_kp or args.kd > limits.max_kd:
-            raise ValueError(f'kp {args.kp:g} / kd {args.kd:g} exceed this profile (kp <= {limits.max_kp:g}, '
-                             f'kd <= {limits.max_kd:g})')
+        check_gains_against(gains, limits, limits.actuation_ids)
         state = _state_dict(latest['msg'])
         session_map, _, _ = session_inputs(state, legs, joint_map, yaw_ids)
         missing_yaw = undeclared_yaw_legs(state, yaw_ids)
@@ -378,7 +374,8 @@ def main(argv=None):
         fold = plan_fold(geometry, session_map, legs, limits.offsets, args.speed)
         report = cue_report(cues)
         print(json.dumps(dict(legs=legs, held_yaw=yaw_ids, ready_pose_m=[READY_R_M, READY_Z_M],
-                              speed_rad_s=args.speed, kp=args.kp, kd=args.kd,
+                              speed_rad_s=args.speed,
+                              gains={j: dict(kp=gains[i][0], kd=gains[i][1]) for i, j in enumerate(('yaw', 'hip', 'knee'), 1)},
                               fold_back=dict(ok=fold.ok, duration_s=round(float(fold.times[-1]), 1),
                                              rest_offset_rad=REST_OFFSET_RAD, violations=fold.violations),
                               cues=report), indent=1), flush=True)
@@ -430,7 +427,8 @@ def main(argv=None):
                 command = MotorCommand()
                 command.header.stamp = node.get_clock().now().to_msg()
                 command.motors = [MotorTarget(motor_id=mid, position_rad=pos, velocity_rad_s=vel, torque_nm=0.0,
-                                              kp=args.kp, kd=args.kd) for mid, pos, vel in targets]
+                                              kp=gains[mid % 10][0], kd=gains[mid % 10][1])
+                                  for mid, pos, vel in targets]
                 publisher.publish(command)
             time.sleep(max(0.0, 0.05 - (time.monotonic() - tick)))
     except KeyboardInterrupt:

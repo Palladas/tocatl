@@ -244,6 +244,42 @@ class Streamer:
         return None
 
 
+JOINTS = ('yaw', 'hip', 'knee')   # motor_id % 10 == 1, 2, 3
+
+
+def add_gain_arguments(parser, kp, kd):
+    """--kp/--kd for every motor, plus optional per-joint overrides (--kp-hip 20, ...). The
+    2.7:1 hip gearbox makes one motor kp 7.3x stiffer at the hip joint than at the knee."""
+    parser.add_argument('--kp', type=float, default=kp, help=f'motor kp for every joint (default {kp:g})')
+    parser.add_argument('--kd', type=float, default=kd, help=f'motor kd for every joint (default {kd:g})')
+    for joint in JOINTS:
+        parser.add_argument(f'--kp-{joint}', type=float, help=f'{joint} motors kp (default --kp)')
+        parser.add_argument(f'--kd-{joint}', type=float, help=f'{joint} motors kd (default --kd)')
+
+
+def joint_gains(args):
+    """{1: (kp, kd) yaw, 2: hip pitch, 3: knee} from add_gain_arguments; raises if out of range."""
+    gains = {}
+    for index, joint in enumerate(JOINTS, 1):
+        kp = getattr(args, f'kp_{joint}');  kd = getattr(args, f'kd_{joint}')
+        gains[index] = (args.kp if kp is None else kp, args.kd if kd is None else kd)
+        if not (0 < gains[index][0] <= 500 and 0 <= gains[index][1] <= 5):
+            raise ValueError(f'{joint} gains kp {gains[index][0]:g} / kd {gains[index][1]:g}: kp must be in (0, 500] '
+                             'and kd in [0, 5]')
+    return gains
+
+
+def check_gains_against(gains, limits, motor_ids_):
+    """Refuse gains above the running profile's max_motor_kp / max_motor_kd for the motors used."""
+    used = {mid % 10 for mid in motor_ids_}
+    for index in sorted(used):
+        kp, kd = gains[index]
+        if kp > limits.max_kp or kd > limits.max_kd:
+            raise ValueError(f'{JOINTS[index - 1]} kp {kp:g} / kd {kd:g} exceed this profile '
+                             f'(kp <= {limits.max_kp:g}, kd <= {limits.max_kd:g}; raise max_motor_kp/kd '
+                             'on the controller to go higher)')
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='tocatl_play', description=__doc__.splitlines()[0])
     parser.add_argument('--legs', required=True, help='legs to move, comma-separated, e.g. 1,2')
@@ -254,8 +290,7 @@ def build_parser():
     for field in fields(PlaneMotion):
         parser.add_argument('--' + field.name.replace('_', '-'), type=type(getattr(defaults, field.name)),
                             default=getattr(defaults, field.name))
-    parser.add_argument('--kp', type=float, default=30.0)
-    parser.add_argument('--kd', type=float, default=2.0)
+    add_gain_arguments(parser, 30.0, 2.0)
     parser.add_argument('--geometry', default='config/robot-geometry.json')
     parser.add_argument('--joint-map', default='config/joint-map.json')
     parser.add_argument('--dry-run', action='store_true', help='plan and report only; publish nothing')
@@ -315,8 +350,7 @@ def main(argv=None):
         motion = PlaneMotion(**{f.name: getattr(args, f.name) for f in fields(PlaneMotion)})
         if motion.kind != 'stand':
             motion.validate()
-        if not (0 < args.kp <= 500 and 0 <= args.kd <= 5):
-            raise ValueError('kp must be in (0, 500] and kd in [0, 5]')
+        gains = joint_gains(args)
         if actuated is not None and not set(legs) <= set(actuated):
             raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
         geometry, joint_map = load_geometry(args.geometry), load_joint_map(args.joint_map)
@@ -374,9 +408,7 @@ def main(argv=None):
                 raise ValueError(f'--actuated-legs {actuated} does not match the controller session {session_legs}')
         if not set(legs) <= set(actuated):
             raise ValueError(f'Legs {sorted(set(legs) - set(actuated))} are not commanded by this controller session')
-        if args.kp > limits.max_kp or args.kd > limits.max_kd:
-            raise ValueError(f'kp {args.kp:g} / kd {args.kd:g} exceed this profile (kp <= {limits.max_kp:g}, '
-                             f'kd <= {limits.max_kd:g})')
+        check_gains_against(gains, limits, [m for leg in actuated for m in motor_ids(leg)[1:]] + list(yaw_ids))
         if limits.torque_limit:
             motion = replace(motion, torque_limit_nm=limits.torque_limit)
         motion.validate()
@@ -445,7 +477,8 @@ def main(argv=None):
             command = MotorCommand()
             command.header.stamp = node.get_clock().now().to_msg()
             command.motors = [MotorTarget(motor_id=mid, position_rad=pos, velocity_rad_s=vel, torque_nm=0.0,
-                                          kp=args.kp, kd=args.kd) for mid, pos, vel in targets]
+                                          kp=gains[mid % 10][0], kd=gains[mid % 10][1])
+                              for mid, pos, vel in targets]
             publisher.publish(command)
             time.sleep(max(0.0, motion.dt_s - (time.monotonic() - tick)))
     except KeyboardInterrupt:
