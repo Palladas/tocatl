@@ -51,19 +51,9 @@ The fix uses three files in `scripts/udev/`:
 - `tocatl-can-names` renames in two passes, through temporary `tcan_canN` names, so no rename
   collides. It never renames an interface that is up.
 
-Install or update (on the Pi, from `~/tocatl`):
-
-```bash
-sudo install -m 755 scripts/udev/tocatl-can-names /usr/local/sbin/
-sudo install -m 644 scripts/udev/tocatl-can-names.service /etc/systemd/system/
-sudo install -m 644 scripts/udev/70-tocatl-can.rules /etc/udev/rules.d/
-sudo systemctl daemon-reload && sudo systemctl enable tocatl-can-names.service
-sudo udevadm control --reload
-```
-
-To add or replace an adapter, read its serial with
-`cat /sys/class/net/canN/device/../serial` and edit `MAP` in the script. Logs:
-`journalctl -t tocatl-can-names`.
+Commands to install, update, check and extend it are in COMMANDS.md:
+[B3. Adapter names](../COMMANDS.md#b3-adapter-names) and
+[J1. CAN adapter names service](../COMMANDS.md#j1-can-adapter-names-service).
 
 Bring the links up as described in COMMANDS.md section B. udev only sets the names; it doesn't
 set the bitrate.

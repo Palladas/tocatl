@@ -18,6 +18,8 @@ by Pranav.
 |---|---|
 | Open a terminal ready for ROS | [A. Terminal setup](#a-terminal-setup) |
 | Bring CAN up after a reboot or a freeze | [B. CAN links](#b-can-links) |
+| Check which motors are plugged in, and on which bus | [B2. Which motors are on which bus](#b2-which-motors-are-on-which-bus) |
+| Check the CAN adapter names after a reboot | [B3. Adapter names](#b3-adapter-names) |
 | Just watch the motors (no motion) | [C1. Level 1 telemetry](#c1-level-1--read-only-telemetry) |
 | Home legs | [C2. Level 2 homing](#c2-level-2--homing) + [D. Homing](#d-homing) |
 | Move legs in the air (nudge, pose, circle, wave) | [C3. Level 3](#c3-level-3--feet-in-the-air) + [E. Motions](#e-motions) |
@@ -29,6 +31,8 @@ by Pranav.
 | Record telemetry | [G. Watch and debug](#g-watch-and-debug) |
 | Test a separate motor (CAN ID, rotation, max torque) | [H. Motor bench](#h-motor-bench-separate-motor) |
 | Get the latest code onto the Pi | [I. Update the Pi](#i-update-the-pi) |
+| Pair or check the Xbox pad, CAN naming service, other one-time Pi setup | [J. One-time Pi setup](#j-one-time-pi-setup) |
+| Run the tests | [K. Tests](#k-tests) |
 
 **The three terminals:**
 
@@ -44,18 +48,20 @@ Start every terminal with [A](#a-terminal-setup).
 
 **Shortcuts** (in the repo, so they arrive with every pull; run from any directory):
 
-| Script | Does |
-|---|---|
-| `~/tocatl/scripts/cmds/level1.sh` | Level 1 read-only telemetry, all buses |
-| `~/tocatl/scripts/cmds/can-scan.sh` | which motors answer on which bus (read-only get-ID; buses UP, nothing else running) |
-| `~/tocatl/scripts/cmds/level4-walk.sh` | Level 4 controller for standing/walking (homing + motion, `fault_response:=soften`) |
-| `~/tocatl/scripts/cmds/level3-perform.sh` | Level 3 controller, all six legs feet in the air (homing + motion) |
-| `~/tocatl/scripts/cmds/perform.sh` | feet-in-air cues (`tocatl_perform`); `--dry-run` plans only |
-| `~/tocatl/scripts/cmds/state.sh` | one snapshot: safety, reason, motors, CAN counters |
-| `~/tocatl/scripts/cmds/teleop.sh` | Xbox controller (joy_node + tocatl_teleop) |
+| Script | Does | Opens CAN | Moves motors | Section |
+|---|---|---|---|---|
+| `~/tocatl/scripts/cmds/can-scan.sh` | which motors answer on which bus | get-ID only | no | [B2](#b2-which-motors-are-on-which-bus) |
+| `~/tocatl/scripts/cmds/level1.sh` | Level 1 read-only telemetry, all buses | yes | no | [C1](#c1-level-1--read-only-telemetry) |
+| `~/tocatl/scripts/cmds/state.sh` | one snapshot: safety, reason, motors, CAN counters | no | no | [G](#g-watch-and-debug) |
+| `~/tocatl/scripts/cmds/level3-perform.sh` | Level 3 controller, all six legs feet in the air (homing + motion) | yes | when armed | [C3](#c3-level-3--feet-in-the-air) |
+| `~/tocatl/scripts/cmds/perform.sh` | feet-in-air cues (`tocatl_perform`); `--dry-run` plans only | no | via the controller | [E8](#e8-perform-feet-in-the-air-xbox-cues) |
+| `~/tocatl/scripts/cmds/level4-walk.sh` | Level 4 controller for standing/walking (homing + motion, `fault_response:=soften`) | yes | when armed | [C4](#c4-level-4--standing) |
+| `~/tocatl/scripts/cmds/teleop.sh` | Xbox controller (joy_node + tocatl_teleop) | no | via walker/performer | [E7](#e7-walk-with-an-xbox-controller) |
 
-Extra controller parameters go after the script, e.g. `level1.sh -p can_transport:=v2`.
-Full reference for every script, plus the CAN-name and Xbox setup notes: [`scripts/cmds/README.md`](scripts/cmds/README.md).
+- The controller scripts write a run folder, `~/tocatl-runs/cli-<UTC time>/`, containing
+  `controller.log`.
+- Extra parameters go after the script, e.g. `level1.sh -p can_transport:=v2`, or
+  `perform.sh --dry-run`.
 
 ## A. Terminal setup
 ```bash
@@ -70,8 +76,53 @@ for b in can0 can1 can2; do sudo ip link set $b down; sudo ip link set $b type c
 # fewer buses connected: list only those, e.g. "for b in can2"
 ip -br link | grep can      # want every bus UP
 ip -details link show can0 | grep -oE "can state [A-Z-]+|bitrate [0-9]+"   # want ERROR-ACTIVE, 1000000; repeat for can1, can2
-ps -eo pid,args | grep -E "[m]otor_controller|[t]ocatl_play|[m]otor_bench"   # must print nothing before starting
+ps -eo pid,args | grep -E "[m]otor_controller|[t]ocatl_play|[t]ocatl_walk|[t]ocatl_perform|[m]otor_bench"   # must print nothing before starting
 ```
+
+### B2. Which motors are on which bus
+Read-only: it sends only get-ID (comm type 0) to IDs 1–127. Run it with the buses UP (B) and
+no controller or bench running:
+```bash
+~/tocatl/scripts/cmds/can-scan.sh            # all three buses
+~/tocatl/scripts/cmds/can-scan.sh can2       # one bus
+cd ~/tocatl && .venv/bin/python scripts/can_scan.py can0 can1   # same thing, without the running-process check
+```
+
+| Output | Meaning |
+|---|---|
+| `answered [...]` | motors that replied on this bus |
+| `missing [...]` | mapped to this bus but silent: unpowered, unplugged or wrong ID |
+| `ON THE WRONG BUS` | the cable is in the wrong chain, or the adapter names swapped (B3) |
+| `send failed … nothing acknowledges frames` | no powered motor on that bus: check power, CAN-H/L, termination (about 60 Ω across H/L, power off) |
+
+The map: can0 = legs 1/2 (11–13, 21–23), can1 = legs 3/4 (31–33, 41–43), can2 = legs 5/6
+(51–53, 61–63).
+
+A controller does the same check at startup (`verify_can_wiring`). It prints
+`CAN wiring check: can0: [...]` and refuses to start if a motor answers on the wrong bus.
+
+### B3. Adapter names
+A boot service pins each adapter's name to its USB serial (setup in J1):
+
+| Name | Legs | Adapter serial |
+|---|---|---|
+| can0 | 1, 2 | `003A00665743500D20353341` |
+| can1 | 3, 4 | `0035005C4633500E20303035` |
+| can2 | 5, 6 | `0036006D4633500E20303035` |
+
+Check the names after a reboot:
+```bash
+for b in can0 can1 can2; do echo "$b $(cat /sys/class/net/$b/device/../serial)"; done   # must match the table
+journalctl -b -t tocatl-can-names --no-pager          # what the service renamed this boot
+journalctl -b -u systemd-udevd --no-pager | grep -i rename   # any rename errors
+```
+To fix names now, without rebooting (links must be DOWN):
+```bash
+for b in can0 can1 can2; do sudo ip link set $b down; done
+sudo /usr/local/sbin/tocatl-can-names
+```
+To map buses for a single run instead, add `-p can1_channel:=can2 -p can2_channel:=can1` (any
+pair) to the controller.
 
 ## C. Start a controller (T1)
 Run only one controller at a time. Ctrl-C stops it; the node disables the motors and restores
@@ -94,6 +145,30 @@ those buses. For example, Level 1 with only can2:
 **Adapter got a different name:** point a bus at another interface, e.g.
 `-p can2_channel:=can0`. Linux names adapters in the order it finds them, so check
 `ip -br link` after every reboot.
+
+**Optional controller parameters** (add to any C command, or after a script):
+
+| Parameter | Effect |
+|---|---|
+| `-p can_transport:=v2` | faster CAN sends, without the driver's 10 ms pause (opt-in; rollout below) |
+| `-p control_period_s:=0.01` | pause between command passes (default 0.02); try only with v2 |
+| `-p fault_response:=soften` | on a fault, ramp kp to zero over `fault_soften_s` (3 s), instead of dropping at once |
+| `-p verify_can_wiring:=false` | skip the startup get-ID wiring check |
+| `-p canN_channel:=canM` | point logical bus N at interface M |
+
+**Transport v2 rollout.** Change one step at a time. Stop at the first `No buffer space
+available` or rising `dropped`, reset the bus (B), go back to v1, and note the step.
+1. Run the Pi tests, including the timing test (K).
+2. Level 1, one leg, with `-p can_transport:=v2`. While it runs:
+   ```bash
+   ros2 topic hz /robot_state
+   ip -s link show can0 | sed -n 4p; sleep 5; ip -s link show can0 | sed -n 4p   # TX rising, dropped not rising
+   ```
+3. Level 1, all legs. Same checks as step 2.
+4. Level 3, one leg: nudge (E1) with v2.
+5. Level 3, all legs: circle and wave (E3, E4). Then try `-p control_period_s:=0.01`.
+
+Details are in `docs/can-transport.md`.
 
 ### C1. Level 1 · read-only telemetry
 ```bash
@@ -247,23 +322,8 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
   `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
 
 ### E7. Walk with an Xbox controller
-One-time setup on the Pi:
-- Install the joystick driver: `sudo apt install ros-jazzy-joy`.
-- Add the login user to the `input` group, then log in again: `sudo usermod -aG input tocatl`.
-  Without it, `joy_node` (SDL2) can't read `/dev/input/event*` over SSH and publishes nothing.
-- **Bluetooth (paired 2026-11-07: Xbox Series pad `AC:8E:BD:64:DD:20`, driver xpadneo).**
-  It's bonded and trusted, so pressing the Xbox button reconnects it. Check it with
-  `bluetoothctl info AC:8E:BD:64:DD:20` (want `Bonded: yes`, `Connected: yes`).
-  To pair a new pad, run `bluetoothctl`, then `agent NoInputNoOutput`, `default-agent`, `scan on`.
-  Hold the pad's pair button until the logo flashes fast, then `pair <MAC>`, `trust <MAC>`,
-  `connect <MAC>`. Without the agent, pairing fails with `AuthenticationCanceled` and nothing is
-  bonded.
-- **USB:** plug the pad in. It should appear as `/dev/input/js0`. Add `-p axis_dpad_y:=7`
-  (xpad numbers the D-pad differently).
-- Check the layout: `ros2 topic echo /joy` while pressing buttons. The defaults were recorded over
-  Bluetooth: LB 4, Start 7, B 1, X 2, Back 6, D-pad up/down axis 8, left stick axes 1/0, right
-  stick axis 3, RT axis 5. If yours differ, change the `button_*` / `axis_*` parameters of
-  `tocatl_teleop`.
+Pairing, checking the pad and checking the button layout are in [J2](#j2-xbox-pad). Press the
+Xbox button to turn the pad on: it reconnects by itself.
 
 Run it with a C4 controller (T1), using `-p fault_response:=soften`. Use one terminal for each of
 these three:
@@ -272,6 +332,8 @@ ros2 run joy joy_node --ros-args -p autorepeat_rate:=20.0     # T4: reads the pa
 ros2 run tocatl_kinematics tocatl_teleop                      # T5: pad -> /cmd_vel, stop, gait, arm
 ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
 ```
+`~/tocatl/scripts/cmds/teleop.sh` starts T4 and T5 together; Ctrl-C stops both. Over USB, add
+`-p axis_dpad_y:=7` to teleop (e.g. `teleop.sh -p axis_dpad_y:=7`).
 
 | Pad | Action |
 |---|---|
@@ -314,6 +376,15 @@ ground.** Hip pitch and knee only; the yaws stay unpowered (Level 3). Never run 
 - `--speed` sets the peak raw motor speed (default 1.0 rad/s, cap 5). Start slower, e.g. `--speed 0.5`.
 - A disarm or fault goes back to REST. The next arm unfolds again from wherever the legs are.
 
+The same steps without the scripts (C3 controller in T1):
+```bash
+ros2 run tocatl_kinematics tocatl_perform --dry-run                  # T2: plan and report every cue
+ros2 run tocatl_kinematics tocatl_perform --speed 0.5                # T2: run (speed in raw motor rad/s)
+ros2 topic pub --once /perform/cue std_msgs/msg/String "{data: wave}"   # T3: any cue by name
+ros2 topic pub --once /walk/stop std_msgs/msg/Empty                  # T3: fold back and disarm
+```
+Cue names: `wave`, `wave_reverse`, `circle`, `alternate`, `bloom`, `reach`.
+
 ## F. Arm / disarm / stop (T3)
 ```bash
 ros2 service call /motors/enable std_srvs/srv/SetBool "{data: true}"    # ARM: the waiting motion starts
@@ -333,6 +404,10 @@ ros2 topic hz /robot_state                               # is telemetry flowing?
 grep -E "Readiness cleared|Motion fault|READY|ERROR|WARN" $RUN/controller.log | tail -20
 ls -td ~/tocatl-runs/*/ | head -3                       # newest run folders
 ros2 bag record /robot_state -o $RUN/bag                 # record telemetry; Ctrl-C to stop
+~/tocatl/scripts/cmds/state.sh                           # one snapshot: safety, reason, motors, CAN counters
+for b in can0 can1 can2; do echo $b; ip -s link show $b | sed -n 4p; done   # TX counters: packets, errors, dropped
+ip -details link show can0 | grep -oE "can state [A-Z-]+"   # ERROR-ACTIVE good; ERROR-PASSIVE / BUS-OFF = wiring/termination
+ps -eo pid,args | grep -E "[m]otor_controller|[t]ocatl_|[j]oy_node|[m]otor_bench"   # what is running
 ```
 `$RUN` only exists in the terminal where you set it. In other terminals, use the newest folder
 from `ls -td ~/tocatl-runs/*/`.
@@ -359,6 +434,108 @@ cd ~/tocatl && git status --short        # must be empty
 git pull --ff-only
 # Rebuild only if a pull changes package.xml, setup.py, msgs, or adds new files:
 source /opt/ros/jazzy/setup.bash && colcon build --symlink-install
+source install/setup.bash && ros2 pkg executables tocatl_kinematics   # new commands listed?
+```
+If `git status` shows local edits on the Pi, save them first, then decide whether to keep them
+(commit them from the Mac) or drop them:
+```bash
+mkdir -p ~/patches && git diff > ~/patches/pi-local-$(date +%Y%m%d).patch   # save every local edit
+git checkout -- <file> ...                                                   # drop them (after saving)
+git apply ~/patches/pi-local-<date>.patch                                   # bring them back if needed
+```
+The Pi fetches with a read-only deploy key (`git fetch` works without a passphrase). It pushes
+with Pranav's key, so commit and push from the Mac.
+
+## J. One-time Pi setup
+Already done on the Pi. Rerun these only to repair or redo the setup.
+
+### J1. CAN adapter names service
+Pins `can0`–`can2` to the adapters' USB serials (B3). A plain udev `NAME=` rule fails here: all
+three adapters appear at once, and renaming into a name that's still taken fails with
+`File exists`. So a service renames them in two passes, and never renames a link that is UP.
+Install or update it:
+```bash
+cd ~/tocatl
+sudo install -m 755 scripts/udev/tocatl-can-names /usr/local/sbin/
+sudo install -m 644 scripts/udev/tocatl-can-names.service /etc/systemd/system/
+sudo install -m 644 scripts/udev/70-tocatl-can.rules /etc/udev/rules.d/
+sudo systemctl daemon-reload && sudo systemctl enable tocatl-can-names.service
+sudo udevadm control --reload
+```
+Add or replace an adapter:
+```bash
+cat /sys/class/net/can0/device/../serial        # read the new adapter's serial (use its current name)
+nano scripts/udev/tocatl-can-names              # edit MAP, commit from the Mac, then reinstall as above
+```
+Simulate a boot (every adapter re-enumerates at once; links must be DOWN, no controller):
+```bash
+for d in $(for b in can0 can1 can2; do basename $(readlink -f /sys/class/net/$b/device/..); done); do echo 0 | sudo tee /sys/bus/usb/devices/$d/authorized >/dev/null; echo 1 | sudo tee /sys/bus/usb/devices/$d/authorized >/dev/null; done
+sleep 5; for b in can0 can1 can2; do echo "$b $(cat /sys/class/net/$b/device/../serial)"; done
+```
+The old 2025 rule is disabled as `/etc/udev/rules.d/88-canable.rules.disabled-20261106`.
+
+### J2. Xbox pad
+Paired 2026-11-07: Xbox Series pad `AC:8E:BD:64:DD:20` (driver `xpadneo`), bonded and trusted.
+Another pad, `40:8E:2C:2A:6D:84`, is also paired.
+
+**Once per Pi:**
+```bash
+sudo apt install ros-jazzy-joy
+sudo usermod -aG input tocatl      # then log in again: joy_node (SDL2) can't read /dev/input/event* without it
+```
+
+**Check the pad:**
+```bash
+bluetoothctl info AC:8E:BD:64:DD:20 | grep -E "Name|Paired|Bonded|Trusted|Connected"   # all yes
+bluetoothctl devices Paired                       # every paired device
+ls -l /dev/input/js*                              # want /dev/input/js0
+grep -A4 'Name="Xbox' /proc/bus/input/devices | grep -E "^N:|^H:"
+id -nG | grep -w input && test -r /dev/input/event5 && echo readable    # access over SSH
+```
+`Paired`/`Bonded`/`Trusted: yes` with `Connected: no` means the pad is off. Press the Xbox
+button and it reconnects by itself.
+
+**Pair a new pad** (plugging in by USB does not pair it for Bluetooth):
+```bash
+bluetoothctl
+# inside bluetoothctl:
+agent NoInputNoOutput
+default-agent
+scan on
+# hold the pad's pair button until the logo flashes fast; wait for "Xbox Wireless Controller" and its MAC
+pair <MAC>
+trust <MAC>
+connect <MAC>
+exit
+```
+- Without the agent, pairing fails with `AuthenticationCanceled`. The pad may still connect, but
+  nothing is bonded, so it won't reconnect by itself.
+- To start over, run `bluetoothctl remove <MAC>`.
+
+**Check the button layout** (terminal 1: `joy_node`; terminal 2: echo):
+```bash
+ros2 run joy joy_node --ros-args -p autorepeat_rate:=20.0
+ros2 topic echo /joy          # press each button; watch which index changes
+```
+- **Recorded over Bluetooth:** LB 4, Start 7, B 1, X 2, Back 6, D-pad up/down axis 8, left
+  stick axes 1 (forward +) and 0 (left +), right stick axis 3 (left +), RT axis 5 (1 released,
+  −1 pressed).
+- **Not yet recorded:** A 0, Y 3, RB 5 and the stick clicks 9/10.
+- **Over USB** (`xpad`), the D-pad up/down is axis 7.
+- To change an index: `ros2 run tocatl_kinematics tocatl_teleop --ros-args -p button_lb:=4 -p axis_dpad_y:=8`.
+
+## K. Tests
+On the Mac (no ROS needed):
+```bash
+PYTHONPATH=src/tocatl_lowlevel python3.12 -m pytest -q -p no:cacheprovider src/tocatl_lowlevel/test
+PYTHONPATH=src/tocatl_kinematics python3.12 -m pytest -q -p no:cacheprovider src/tocatl_kinematics/test
+PYTHONPATH=scripts python3.12 -m pytest -q -p no:cacheprovider test
+```
+On the Pi (also runs the ROS-only tests the Mac skips):
+```bash
+cd ~/tocatl && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install && source install/setup.bash
+for d in src/tocatl_lowlevel/test src/tocatl_kinematics/test test; do .venv/bin/python -m pytest -q -p no:cacheprovider $d; done
+TOCATL_TIMING_TESTS=1 .venv/bin/python -m pytest -q src/tocatl_lowlevel/test/test_homing_timing.py   # homing timing model
 ```
 
 ## Offline tools (no CAN)
