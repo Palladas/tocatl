@@ -89,3 +89,13 @@ def test_cue_buttons_fire_only_while_the_deadman_is_held():
     m.update(*pad(lb=True, rs=True), now=0.4)
     assert m.take_events() == [('cue', 'wave'), ('cue', 'bloom'), ('cue', 'circle'), ('cue', 'alternate'),
                                ('cue', 'wave_reverse')]
+
+
+def test_deadman_is_true_only_while_lb_is_held_and_the_pad_is_fresh():
+    m = TeleopMapper()
+    assert not m.deadman(0.0)                             # no /joy yet
+    m.update(*pad(lb=True), now=0.0)
+    assert m.deadman(0.1)
+    assert not m.deadman(JOY_TIMEOUT_S + 0.01)           # pad went quiet
+    m.update(*pad(), now=1.0)
+    assert not m.deadman(1.0)                             # LB released

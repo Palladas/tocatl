@@ -57,8 +57,10 @@ class WalkParams:
     max_vx_m_s: float = 0.05
     max_vy_m_s: float = 0.05
     max_wz_rad_s: float = 0.2
-    accel_m_s2: float = 0.05
-    alpha_rad_s2: float = 0.2
+    # Command ramp. 0.05 / 0.2 took 1-2 s to change direction (2026-11-07, Pranav: too slow);
+    # these reach full speed in ~0.1-0.25 s.
+    accel_m_s2: float = 0.4
+    alpha_rad_s2: float = 1.6
 
     def validate(self):
         problems = []

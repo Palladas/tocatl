@@ -187,3 +187,24 @@ def test_fold_back_is_feasible_on_all_legs(geometry, session):
     ready = ready_pose(geometry, LEGS)
     for leg in LEGS:
         assert fold.q[leg][0] == pytest.approx(ready[leg], abs=1e-9)
+
+
+def test_releasing_the_deadman_pauses_a_cue_and_holding_it_resumes(rig):
+    performer, clock, measured = rig
+    run(performer, clock, measured, 'DISARMED', 0.1)
+    run(performer, clock, measured, 'ARMED', 30.0)
+    performer.request_cue('wave')
+    run(performer, clock, measured, 'ARMED', 1.0)
+    assert performer.phase == 'CUE'
+    progress, held = performer.streamer.progress, dict(measured)
+    for _ in range(80):                                   # 4 s released: longer than a stall
+        performer.set_deadman(False, clock.now)
+        run(performer, clock, measured, 'ARMED', 0.05)
+    assert performer.phase == 'CUE' and performer.streamer.progress == progress
+    assert max(abs(measured[m] - held[m]) for m in measured) < 1e-9
+    for _ in range(10):
+        performer.set_deadman(True, clock.now)
+        run(performer, clock, measured, 'ARMED', 0.05)
+    assert performer.streamer.progress > progress
+    texts = [t for _, t in performer.take_events()]
+    assert any('paused' in t for t in texts) and any('resumes' in t for t in texts)

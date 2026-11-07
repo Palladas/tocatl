@@ -13,6 +13,11 @@ steps among heights checked at startup (two each way, the full walk feasibility 
 change waits for the feet to settle, then the body moves vertically (ADJUST) and walking
 resumes.
 
+Deadman (``walk/deadman``, std_msgs/Bool, from tocatl_teleop: LB held and the pad fresh): while it
+reads false, every phase freezes in place (joints held where they are; a tripod is statically
+stable at every instant), and LB resumes from there at zero velocity. Without fresh deadman
+messages (scripts, hand-published /cmd_vel) the walker ignores it.
+
 Stopping:
 - First Ctrl-C (or a ``walk/stop`` message) stops gracefully as above.
 - A second Ctrl-C disarms at once. Disarming drops a standing robot, so keep it supported.
@@ -53,6 +58,7 @@ HEIGHT_STEPS = 2           # verified steps each way from the start height
 BLEND_MIN_S = 2.0
 TICK_S = 0.02
 COMMAND_TIMEOUT_S = 0.5    # a /cmd_vel older than this counts as zero
+DEADMAN_FRESH_S = 0.5      # walk/deadman messages older than this are ignored (no teleop)
 YAW_RADIAL_TOLERANCE = 0.05
 
 
@@ -94,6 +100,8 @@ class WalkStreamer:
         self.rate = 0.0
         self.last_tick = self.last_advance = self.done_at = None
         self.stop_requested = False
+        self.deadman = None                       # (held, received) from walk/deadman
+        self.frozen = False
         self.pending_gait = None
         self.start_params = params
         self.gaits = (params.gait,)                # gaits verified before streaming
@@ -106,6 +114,13 @@ class WalkStreamer:
     # --- operator inputs -------------------------------------------------------------
     def request_stop(self):
         self.stop_requested = True
+
+    def set_deadman(self, held, received):
+        self.deadman = (bool(held), received)
+
+    def deadman_released(self, now):
+        """True while a fresh walk/deadman says released (teleop running, LB up or pad lost)."""
+        return self.deadman is not None and not self.deadman[0] and now - self.deadman[1] <= DEADMAN_FRESH_S
 
     def allow_gaits(self, gaits):
         """Gaits the operator may switch to (each checked at the start height beforehand)."""
@@ -314,7 +329,14 @@ class WalkStreamer:
             if now - self.done_at >= END_HOLD_S:
                 self.phase, self.reason = 'DONE', 'Walk complete'
                 return None
+        elif self.deadman_released(now):
+            # Deadman: hold every joint where the plan is now; resume from zero velocity.
+            if not self.frozen:
+                self.frozen = True
+                self.gen.command = (0.0, 0.0, 0.0)
+            self.last_advance, self.rate = now, 0.0
         else:
+            self.frozen = False
             if self.rate >= STALL_RATE:
                 self.last_advance = now
             elif now - self.last_advance > STALL_S:
@@ -411,7 +433,7 @@ def main(argv=None):
     import rclpy
     from rclpy.signals import SignalHandlerOptions
     from geometry_msgs.msg import Twist
-    from std_msgs.msg import Empty, Int8, String
+    from std_msgs.msg import Bool, Empty, Int8, String
     from std_srvs.srv import SetBool
     from tocatl_interfaces.msg import MotorCommand, MotorTarget, RobotState
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
@@ -453,6 +475,8 @@ def main(argv=None):
                   f'No verified height further {"up" if msg.data > 0 else "down"} (heights are verified '
                   'for the start gait only)', flush=True)
     node.create_subscription(Int8, 'walk/height', on_height, 1)
+    node.create_subscription(Bool, 'walk/deadman',
+                             lambda m: streamer and streamer.set_deadman(m.data, time.monotonic()), 1)
     try:
         deadline = time.monotonic() + 5.0
         while 'msg' not in latest and time.monotonic() < deadline:
@@ -520,6 +544,7 @@ def main(argv=None):
               + ('the script' if script else 'from /cmd_vel') + '. Ctrl-C once to stop and sit, twice to disarm.',
               flush=True)
         last_phase, last_report, interrupts = streamer.phase, 0.0, 0
+        was_frozen = False
         while True:
             tick = time.monotonic()
             try:
@@ -537,6 +562,10 @@ def main(argv=None):
                 print('Stopping: settling the feet, then lowering. Ctrl-C again to disarm now.', flush=True)
                 streamer.request_stop()
                 continue
+            if streamer.frozen != was_frozen:
+                print('Deadman released: holding in place' if streamer.frozen else 'Deadman held: resuming',
+                      flush=True)
+                was_frozen = streamer.frozen
             if streamer.phase != last_phase:
                 print(f'Phase {streamer.phase}', flush=True)
                 last_phase = streamer.phase

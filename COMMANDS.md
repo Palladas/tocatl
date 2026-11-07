@@ -370,17 +370,18 @@ ros2 run tocatl_kinematics tocatl_walk --gait tripod          # T2: the walker
 
 | Pad | Action |
 |---|---|
-| **LB held** | **deadman**: it only walks while held |
+| **LB held** | **deadman**: nothing moves unless LB is held. Releasing it freezes the robot in place mid-step (rise, walk and sit alike); holding it again resumes from zero speed |
 | Left stick | walk in any direction |
 | Right stick left/right | turn |
 | Right trigger | speed: 30% released, 100% pressed |
-| Start held 1 s | ARM: the body rises, then it follows the sticks |
-| B | stop: settle the feet, lower the body, disarm |
+| Start held 1 s | ARM. Then hold LB: the body rises, then it follows the sticks |
+| B | stop: settle the feet, lower the body, disarm (keep LB held while it sits) |
 | X | next gait (ripple, then tetrapod, then tripod), applied once the feet settle; only gaits that passed the startup check, and only at the start body height |
 | D-pad up/down | body height ±1 cm, among the heights the walker checked at startup (two steps each way) |
 | Back / Xbox button | **DISARM now**, the hard stop; a standing robot drops |
 
-If the pad stops sending for 0.25 s, the walk command goes to zero and the feet settle.
+If the pad stops sending for 0.25 s, the robot freezes in place, the same as releasing LB.
+Direction changes take about 0.1–0.25 s to reach the new speed: the ramp is 0.4 m/s² and 1.6 rad/s².
 
 ### E8. Perform: feet in the air, Xbox cues
 Artistic leg cues played on demand. **The robot must be supported with every foot clear of the
@@ -394,16 +395,18 @@ ground.** Hip pitch and knee only; the yaws stay unpowered (Level 3). Never run 
 
 | Pad | Action |
 |---|---|
-| Start held 1 s | ARM: the legs unfold to the ready pose (feet at r 0.32 m, z +0.02 m) |
+| Start held 1 s | ARM. Then hold LB: the legs unfold to the ready pose (feet at r 0.32 m, z +0.02 m) |
 | **LB held** + A | `wave`: circles rippling around the body |
 | **LB held** + Y | `bloom`: all feet reach out and up, then return |
 | **LB held** + RB | `circle`: all feet circle together |
 | **LB held** + left-stick click | `alternate`: the two tripods circle in antiphase |
 | **LB held** + right-stick click | `wave_reverse`: the ripple runs the other way |
-| B | after the current cue, fold back to the rest pose (0.10 rad off each homed stop), then disarm |
+| B | after the current cue, fold back to the rest pose (0.10 rad off each homed stop), then disarm (keep LB held) |
 | Back / Xbox button | **DISARM now**: the legs go limp |
 
 - Cues only fire while LB is held. A cue that arrives while another is playing is ignored.
+- Releasing LB (or losing the pad) pauses the unfold, a cue or the fold-back in place.
+  Holding LB again resumes it. Cues sent by hand with `ros2 topic pub` ignore the deadman.
 - `reach` (feet point down) has no button. Run it with
   `ros2 topic pub --once /perform/cue std_msgs/msg/String "{data: reach}"`.
 - `--speed` sets the peak raw motor speed (default 1.0 rad/s, cap 5). Start slower, e.g. `--speed 0.5`.
