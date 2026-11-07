@@ -47,6 +47,7 @@ Start every terminal with [A](#a-terminal-setup).
 | Script | Does |
 |---|---|
 | `~/tocatl/scripts/cmds/level1.sh` | Level 1 read-only telemetry, all buses |
+| `~/tocatl/scripts/cmds/can-scan.sh` | which motors answer on which bus (read-only get-ID; buses UP, nothing else running) |
 | `~/tocatl/scripts/cmds/level4-walk.sh` | Level 4 controller for standing/walking (homing + motion, `fault_response:=soften`) |
 | `~/tocatl/scripts/cmds/level3-perform.sh` | Level 3 controller, all six legs feet in the air (homing + motion) |
 | `~/tocatl/scripts/cmds/perform.sh` | feet-in-air cues (`tocatl_perform`); `--dry-run` plans only |
