@@ -1180,7 +1180,10 @@ def create_homing(node, hardware):
             verify_repeatability=verify, profiles=profiles, legs=legs,
             timeout_s=node.declare_parameter('homing.timeout_s', 600.0 if verify else 60.0).value,
             hip_torque_limit=float(node.declare_parameter('homing.hip_torque_limit_nm', 1.5).value),
-            hip_contact_effort=float(node.declare_parameter('homing.hip_contact_effort_nm', 1.0).value))
+            hip_contact_effort=float(node.declare_parameter('homing.hip_contact_effort_nm', 1.0).value),
+            # false = hips report a stop outside the window instead of refusing it (for
+            # re-learning references); the result still records reference_within_window.
+            enforce_hip_window=node.declare_parameter('homing.enforce_hip_window', True).value)
     if method in ('legacy_impedance', 'active_endstop', 'active_endstop_hip_hold'):
         config_type = ContactConfig if method == 'legacy_impedance' else KneeSeekConfig
         worker_type = (HeldHipKneeHoming if method == 'active_endstop_hip_hold' else
@@ -1448,13 +1451,17 @@ TRIPODS = ((1, 3, 5), (2, 4, 6))
 class HipKneeHoming:
     """Home hip then knee; repeated contacts are an optional commissioning mode."""
     def __init__(self, hardware, output, *, verify_repeatability=False, timeout_s=None,
-                 profiles=None, legs=(1,), hip_torque_limit=1.5, hip_contact_effort=1.0):
+                 profiles=None, legs=(1,), hip_torque_limit=1.5, hip_contact_effort=1.0,
+                 enforce_hip_window=True):
         if timeout_s is None:
             timeout_s = 600.0 if verify_repeatability else 60.0
         if not (math.isfinite(hip_torque_limit) and math.isfinite(hip_contact_effort)
                 and 0 < hip_contact_effort < hip_torque_limit <= 1.5):
             raise ValueError('homing.hip_contact_effort_nm < homing.hip_torque_limit_nm <= 1.5 required')
         self.hip_torque_limit, self.hip_contact_effort = hip_torque_limit, hip_contact_effort
+        if type(enforce_hip_window) is not bool:
+            raise ValueError('homing.enforce_hip_window must be true or false')
+        self.enforce_hip_window = enforce_hip_window
         if type(verify_repeatability) is not bool or not math.isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError('Invalid homing repeatability mode or timeout')
         self.leg_ids = tuple(legs)
@@ -1657,7 +1664,7 @@ class HipKneeHoming:
                 config = KneeSeekConfig.from_start(mid, stop, initial,
                     verify_repeatability=self.verify_repeatability, direction=direction,
                     torque_limit=limit, contact_effort=self.hip_contact_effort if hip_stage else 1.0,
-                    enforce_window=hip_stage)
+                    enforce_window=hip_stage and self.enforce_hip_window)
                 # The knee stage holds the hip where it is and refuses if it is more than
                 # 0.01 rad away. Read that position from fresh feedback once the released hip
                 # has settled: under tripod contention the latest snapshot can predate the

@@ -641,3 +641,30 @@ def test_enforced_hip_window_refuses_a_stop_that_is_not_the_reference():
     # Knees (enforce_window False) keep normal mode's report-only behaviour.
     knee = KneeSeekConfig.from_start(13, .8, 1.8, direction=-1)
     assert drive_to_stop(knee, 1.8, 1.2).result()['reference_within_window'] is False
+
+
+def test_hip_window_can_be_switched_to_report_only(tmp_path, quick_contact):
+    hw = FakeHardware()
+    configs = []
+    import tocatl_lowlevel.homing as homing
+    original = homing.KneeSeekConfig.from_start.__func__
+    def spy(cls, *args, **kwargs):
+        config = original(cls, *args, **kwargs)
+        configs.append(config)
+        return config
+    for enforce, expected in ((True, [True, False]), (False, [False, False])):
+        configs.clear()
+        worker = HipKneeHoming(hw, tmp_path/f'h{enforce}.json', profiles=profiles(), legs=(1,),
+                               enforce_hip_window=enforce)
+        hw.owner = worker
+        homing.KneeSeekConfig.from_start = classmethod(spy)
+        try:
+            worker.start()
+            worker.thread.join(10)
+        finally:
+            homing.KneeSeekConfig.from_start = classmethod(original)
+        assert not worker.faulted, worker.reason
+        assert [c.enforce_window for c in configs] == expected
+        worker.cancel()
+    with pytest.raises(ValueError, match='true or false'):
+        HipKneeHoming(hw, tmp_path/'x.json', profiles=profiles(), legs=(1,), enforce_hip_window='no')

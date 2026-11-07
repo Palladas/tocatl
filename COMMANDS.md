@@ -239,6 +239,9 @@ controller command:
 - Hip contacts must land within 0.03 rad (turn-aware) of `hip_stop_rad`, or the hip refuses
   with `Loaded contact outside expected stop window`. That means an obstruction, or a stop that
   moved. Check the leg, and update `homing-hip-knee.yaml` only if the new stop is real.
+- **Re-learning references:** start the controller with `-p homing.enforce_hip_window:=false`.
+  Hips then report a stop outside the window instead of refusing it. Home, update the YAML from
+  that run, then restart without the flag.
 
 **One leg at a time** (proven on the robot; the fallback if a tripod run refuses):
 ```bash
