@@ -4,11 +4,13 @@
 # so renaming one to a name another still holds fails ("File exists"). Rename in two passes
 # through temporary names instead. Interfaces that are up (in use) are never renamed.
 set -u
+exec 9>/run/tocatl-can-names.lock
+flock 9   # one run at a time (several adapters can start the service together)
 MAP="003A00665743500D20353341=can0 0035005C4633500E20303035=can1 0036006D4633500E20303035=can2"
 
 target_for() { for pair in $MAP; do [ "${pair%%=*}" = "$1" ] && echo "${pair#*=}"; done; }
 is_up() { ip -o link show "$1" | grep -qE '[<,]UP[,>]'; }
-log() { logger -t tocatl-can-names "$*"; echo "$*"; }
+log() { logger -t tocatl-can-names "$*"; [ -t 1 ] && echo "$*"; return 0; }
 
 for path in /sys/class/net/*; do
     name=$(basename "$path")
