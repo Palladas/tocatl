@@ -17,7 +17,7 @@ from tocatl_kinematics.geometry import RobotGeometry
 from tocatl_kinematics.joint_map import JointMap, motor_ids
 from tocatl_kinematics.leg import KinematicsError, ik, jacobian
 
-KINDS = ('nudge', 'pose', 'circle', 'wave', 'stand')
+KINDS = ('nudge', 'pose', 'circle', 'wave', 'stand', 'goto')
 GRAVITY = 9.81
 RATED_TORQUE_NM = 4.0   # CyberGear continuous rating
 CAP_MARGIN = 0.9        # plans may use at most this fraction of the drive torque cap
@@ -41,7 +41,8 @@ class PlaneMotion:
     # negative knee unfolds it: both move away from the compressed stop).
     d_pitch_rad: float = -0.2
     d_knee_rad: float = -0.2
-    # pose / circle / wave: foot target (or circle centre) in the leg plane.
+    # pose / circle / wave / goto: foot target (or circle centre) in the leg plane. goto moves
+    # there and stays (no hold or return): tocatl_perform's unfold to its ready pose.
     r_m: float = 0.35
     z_m: float = -0.05
     radius_m: float = 0.03
@@ -194,7 +195,7 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
             target = None
         elif motion.kind == 'nudge':
             target = {leg: start[leg] + [motion.d_pitch_rad, motion.d_knee_rad] for leg in legs}
-        elif motion.kind == 'pose':
+        elif motion.kind in ('pose', 'goto'):
             target = {leg: np.array(plane_ik(geometry, leg, motion.r_m, motion.z_m, motion.branch)) for leg in legs}
         else:
             target = {leg: np.array(plane_ik(geometry, leg, motion.r_m + motion.radius_m * np.cos(phase(leg)),
@@ -216,6 +217,7 @@ def plan_plane_motion(geometry: RobotGeometry, joint_map: JointMap, start: dict,
                 segments.append((motion.kind, {leg: (lambda u, leg=leg: circle(u, leg)) for leg in legs}, False))
             except KinematicsError as error:
                 violations.append(f'Circle leaves the workspace: {error}')
+    if target is not None and motion.kind != 'goto':
         segments.append(('hold', {leg: (lambda u, b=target[leg]: b) for leg in legs}, False))
         segments.append(('return', {leg: (lambda u, a=target[leg], b=start[leg]: a + _blend(u) * (b - a))
                                     for leg in legs}, False))

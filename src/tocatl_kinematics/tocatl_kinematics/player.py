@@ -129,12 +129,14 @@ class Streamer:
     STALL_RATE for STALL_S stops the motion with the lagging motor named.
     """
 
-    def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None, lead=LEAD_RAD):
+    def __init__(self, trajectory, kp, kd, clock=time.monotonic, hold=None, lead=LEAD_RAD, end_hold=END_HOLD_S):
         """``hold``: {motor_id: raw} for actuated motors that are not moving. ``lead``: how far a
-        target may lead the measured position (below the controller's max_position_step_rad)."""
+        target may lead the measured position (below the controller's max_position_step_rad).
+        ``end_hold``: how long the final pose is held before the motion counts as DONE."""
         if not 0 < lead <= 1.0:
             raise ValueError('lead must be in (0, 1] rad')
         self.trajectory, self.kp, self.kd, self.clock, self.lead = trajectory, kp, kd, clock, lead
+        self.end_hold = end_hold
         self.hold = dict(hold or {})
         if set(self.hold) & set(trajectory.raw):
             raise ValueError('A motor cannot both move and hold')
@@ -222,7 +224,7 @@ class Streamer:
                                  f'(lead limit {self.lead:.3f} rad); it cannot follow at this load')
         elif self.finished_at is None:
             self.finished_at = now
-        if self.finished_at is not None and now - self.finished_at >= END_HOLD_S:
+        if self.finished_at is not None and now - self.finished_at >= self.end_hold:
             self.phase, self.reason = 'DONE', 'Motion complete'
             return None
         return self.targets(self.index_at(self.progress), measured, self.rate)

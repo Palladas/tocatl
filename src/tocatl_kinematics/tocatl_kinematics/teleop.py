@@ -11,6 +11,10 @@
 | X | next gait: ripple, then tetrapod, then tripod (walk/gait; applied once the feet settle) |
 | D-pad up/down | body height up/down 1 cm (walk/height; among heights tocatl_walk verified) |
 | Back or Xbox button | DISARM now (/motors/enable false), the hard stop; a standing robot drops |
+| **LB held** + A / Y / RB / left-stick click / right-stick click | feet-in-air cue (perform/cue, for tocatl_perform): wave / bloom / circle / alternate / wave_reverse |
+
+Cues are only sent while LB is held, so a stray press does nothing. tocatl_walk ignores them,
+and tocatl_perform ignores /cmd_vel: run one of the two, never both.
 
 Velocity is only non-zero while LB is held and /joy is fresh. If no /joy arrives for
 JOY_TIMEOUT_S (pad out of range or unplugged), the node publishes zero, so the walker
@@ -27,6 +31,9 @@ import sys
 import time
 
 GAIT_CYCLE = ('ripple', 'tetrapod', 'tripod')
+# PadLayout button field -> tocatl_perform cue, sent only while LB (deadman) is held.
+CUE_BUTTONS = (('button_a', 'wave'), ('button_y', 'bloom'), ('button_rb', 'circle'),
+               ('button_ls', 'alternate'), ('button_rs', 'wave_reverse'))
 JOY_TIMEOUT_S = 0.25
 ARM_HOLD_S = 1.0
 PUBLISH_PERIOD_S = 0.05
@@ -40,12 +47,17 @@ class PadLayout:
     axis_rx: int = 3
     axis_rt: int = 5          # 1.0 released .. -1.0 pressed
     axis_dpad_y: int = 8      # +1 up, -1 down (7 over USB/xpad)
+    button_a: int = 0
     button_b: int = 1
     button_x: int = 2
+    button_y: int = 3
     button_lb: int = 4
+    button_rb: int = 5
     button_back: int = 6
     button_start: int = 7
     button_xbox: int = 8
+    button_ls: int = 9        # left stick click
+    button_rs: int = 10       # right stick click
 
 
 @dataclass(frozen=True)
@@ -78,7 +90,7 @@ class TeleopMapper:
     previous_dpad: float = 0.0
     start_since: float = None
     armed_this_hold: bool = False
-    events: list = field(default_factory=list)   # 'arm', 'disarm', 'stop', ('gait', name)
+    events: list = field(default_factory=list)   # 'arm', 'disarm', 'stop', ('gait'|'height'|'cue', value)
     twist: tuple = (0.0, 0.0, 0.0)
 
     def _button(self, buttons, index):
@@ -105,6 +117,10 @@ class TeleopMapper:
                 self.armed_this_hold = True
         else:
             self.start_since, self.armed_this_hold = None, False
+        if self._button(buttons, lay.button_lb):
+            for button, cue in CUE_BUTTONS:
+                if pressed(getattr(lay, button)):
+                    self.events.append(('cue', cue))
         self.previous = tuple(buttons)
         dpad = self._axis(axes, lay.axis_dpad_y)
         step = 1 if dpad > 0.5 else -1 if dpad < -0.5 else 0
@@ -148,6 +164,7 @@ def main(argv=None):
     stop = node.create_publisher(Empty, 'walk/stop', 1)
     gait = node.create_publisher(String, 'walk/gait', 1)
     height = node.create_publisher(Int8, 'walk/height', 1)
+    cue = node.create_publisher(String, 'perform/cue', 1)
     enable = node.create_client(SetBool, 'motors/enable')
     node.create_subscription(Joy, 'joy', lambda m: mapper.update(m.axes, m.buttons, time.monotonic()), 10)
 
@@ -168,6 +185,9 @@ def main(argv=None):
             elif event == 'stop':
                 stop.publish(Empty())
                 node.get_logger().info('Stop: settling and sitting')
+            elif event[0] == 'cue':
+                cue.publish(String(data=event[1]))
+                node.get_logger().info(f'Cue {event[1]}')
             elif event[0] == 'height':
                 height.publish(Int8(data=event[1]))
                 node.get_logger().info(f'Body height {"up" if event[1] > 0 else "down"} (once the feet settle)')
@@ -179,7 +199,8 @@ def main(argv=None):
         msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
         cmd_vel.publish(msg)
     node.create_timer(PUBLISH_PERIOD_S, tick)
-    node.get_logger().info('Teleop ready: hold LB to walk, Start 1 s to arm, B to sit, Back/Xbox to disarm')
+    node.get_logger().info('Teleop ready: hold LB to walk or to fire cues (A/Y/RB/stick clicks), Start 1 s to arm, '
+                           'B to sit, Back/Xbox to disarm')
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

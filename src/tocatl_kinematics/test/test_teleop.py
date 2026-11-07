@@ -74,3 +74,18 @@ def test_dpad_steps_height_once_per_press():
         axes[L.axis_dpad_y] = value
         m.update(axes, buttons, now)
     assert m.take_events() == [('height', 1), ('height', -1), ('height', 1)]
+
+
+def test_cue_buttons_fire_only_while_the_deadman_is_held():
+    m = TeleopMapper()
+    m.update(*pad(a=True), now=0.0)                       # A without LB: nothing
+    m.update(*pad(), now=0.05)
+    m.update(*pad(lb=True), now=0.1)
+    m.update(*pad(lb=True, a=True), now=0.15)             # LB + A: wave, once per press
+    m.update(*pad(lb=True, a=True), now=0.2)
+    m.update(*pad(lb=True, y=True), now=0.25)
+    m.update(*pad(lb=True, rb=True), now=0.3)
+    m.update(*pad(lb=True, ls=True), now=0.35)
+    m.update(*pad(lb=True, rs=True), now=0.4)
+    assert m.take_events() == [('cue', 'wave'), ('cue', 'bloom'), ('cue', 'circle'), ('cue', 'alternate'),
+                               ('cue', 'wave_reverse')]

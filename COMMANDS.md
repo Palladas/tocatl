@@ -23,6 +23,7 @@ by Pranav.
 | Move legs in the air (nudge, pose, circle, wave) | [C3. Level 3](#c3-level-3--feet-in-the-air) + [E. Motions](#e-motions) |
 | Stand up | [C4. Level 4](#c4-level-4--standing) + [E5. Stand](#e5-stand-level-4) |
 | Walk | [C4. Level 4](#c4-level-4--standing) + [E6. Walk](#e6-walk-level-4) |
+| Artistic leg cues from the Xbox pad (feet in the air) | [E8. Perform](#e8-perform-feet-in-the-air-xbox-cues) |
 | Arm, disarm, or stop | [F. Arm / disarm / stop](#f-arm--disarm--stop) |
 | See status, faults, why something stopped | [G. Watch and debug](#g-watch-and-debug) |
 | Record telemetry | [G. Watch and debug](#g-watch-and-debug) |
@@ -47,6 +48,8 @@ Start every terminal with [A](#a-terminal-setup).
 |---|---|
 | `~/tocatl/scripts/cmds/level1.sh` | Level 1 read-only telemetry, all buses |
 | `~/tocatl/scripts/cmds/level4-walk.sh` | Level 4 controller for standing/walking (homing + motion, `fault_response:=soften`) |
+| `~/tocatl/scripts/cmds/level3-perform.sh` | Level 3 controller, all six legs feet in the air (homing + motion) |
+| `~/tocatl/scripts/cmds/perform.sh` | feet-in-air cues (`tocatl_perform`); `--dry-run` plans only |
 | `~/tocatl/scripts/cmds/state.sh` | one snapshot: safety, reason, motors, CAN counters |
 | `~/tocatl/scripts/cmds/teleop.sh` | Xbox controller (joy_node + tocatl_teleop) |
 
@@ -281,6 +284,33 @@ ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
 | Back / Xbox button | **DISARM now**, the hard stop; a standing robot drops |
 
 If the pad stops sending for 0.25 s, the walk command goes to zero and the feet settle.
+
+### E8. Perform: feet in the air, Xbox cues
+Artistic leg cues played on demand. **The robot must be supported with every foot clear of the
+ground.** Hip pitch and knee only; the yaws stay unpowered (Level 3). Never run it together with
+`tocatl_walk`.
+
+1. T1: `scripts/cmds/level3-perform.sh` (C3, all six legs). Home every leg (D).
+2. T2: `scripts/cmds/perform.sh --dry-run`. Check that every cue reports `ok`. Then run
+   `scripts/cmds/perform.sh`. It plans every cue and holds the measured pose.
+3. T4: `scripts/cmds/teleop.sh`.
+
+| Pad | Action |
+|---|---|
+| Start held 1 s | ARM: the legs unfold to the ready pose (feet at r 0.32 m, z +0.02 m) |
+| **LB held** + A | `wave`: circles rippling around the body |
+| **LB held** + Y | `bloom`: all feet reach out and up, then return |
+| **LB held** + RB | `circle`: all feet circle together |
+| **LB held** + left-stick click | `alternate`: the two tripods circle in antiphase |
+| **LB held** + right-stick click | `wave_reverse`: the ripple runs the other way |
+| B | fold back along the unfold path after the current cue, then disarm |
+| Back / Xbox button | **DISARM now**: the legs go limp |
+
+- Cues only fire while LB is held. A cue that arrives while another is playing is ignored.
+- `reach` (feet point down) has no button. Run it with
+  `ros2 topic pub --once /perform/cue std_msgs/msg/String "{data: reach}"`.
+- `--speed` sets the peak raw motor speed (default 1.0 rad/s, cap 5). Start slower, e.g. `--speed 0.5`.
+- A disarm or fault goes back to REST. The next arm unfolds again from wherever the legs are.
 
 ## F. Arm / disarm / stop (T3)
 ```bash
