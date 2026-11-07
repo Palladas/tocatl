@@ -24,6 +24,8 @@ def profiles():
 class FakeHardware:
     def __init__(self):
         self.stale_after = 1.5
+        self.transport = 'v1'
+        self.wiring = None
         self.tx_lock = threading.RLock()
         self.priority_motor = None
         self.events = []
@@ -265,7 +267,8 @@ def test_local_homing_fault_publishes_other_completed_legs_as_ready(tmp_path, qu
     from tocatl_interfaces.msg import RobotState
     from tocatl_lowlevel.motor_controller import MotorController
     hw = FakeHardware()
-    hw.fail_read = 32
+    # Tripod batches: legs 1 and 3 finish together, then leg 2 runs alone and fails.
+    hw.fail_read = 22
     worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3))
     hw.owner = worker
     worker.start()
@@ -275,9 +278,9 @@ def test_local_homing_fault_publishes_other_completed_legs_as_ready(tmp_path, qu
     node = NS(homing=worker, motion=NS(status=lambda: (False,False,'')),
               hardware=hw, readiness=worker.readiness)
     MotorController.add_leg_status(node, state)
-    assert [l.leg_id for l in state.legs if l.ready] == [1,2]
-    assert 'Leg 3' in state.legs[2].status_reason
-    assert state.legs[0].status_reason != state.legs[2].status_reason
+    assert [l.leg_id for l in state.legs if l.ready] == [1,3]
+    assert 'Leg 2' in state.legs[1].status_reason
+    assert state.legs[0].status_reason != state.legs[1].status_reason
 
 
 def test_stale_pair_feedback_does_not_remove_other_legs(tmp_path, quick_contact):
