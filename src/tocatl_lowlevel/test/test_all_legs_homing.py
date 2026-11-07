@@ -505,3 +505,30 @@ def test_leg_refuses_with_a_specific_reason(tmp_path, quick_contact):
     worker2.thread.join(5)
     assert worker2.faulted and 'motor 22 state age' in worker2.reason
     assert time.monotonic() - started >= PAIR_FEEDBACK_WAIT_S * 0.9  # waited before refusing
+
+
+def test_finished_search_never_seeks_or_records_another_contact():
+    """2026-11-07: a homing loop that missed the done flag (its last command expired in the
+    CAN lock queue) called update() again; the DONE phase fell through to the seek, pressed
+    the stop again and recorded a second contact, so readiness refused leg 1."""
+    stop, start = .8, 1.8
+    c = KneeSeekConfig.from_start(12, stop, start, direction=-1)
+    seq = KneeSeekSequence(c, start, 0.)
+    position = previous = reference = start
+    torque, now = 0., 0.
+    for tick in range(1, 3001):
+        now = tick*.02
+        position = max(stop, position+max(-.004, min(.004, reference-position)))
+        velocity, previous = (position-previous)/.02, position
+        command = seq.update(position, velocity, torque, now, now)
+        reference = command.position
+        torque = max(-2.625, min(2.625, command.kp*(reference-position)-command.kd*velocity))
+        if seq.done:
+            break
+    assert seq.done and len(seq.result()['contact_positions_rad']) == 1
+    # Keep feeding loaded-looking samples at the stop for longer than a dwell.
+    for tick in range(1, 200):
+        t = now+tick*.02
+        assert seq.update(stop, 0., -2.0, t, t) is None
+    assert seq.phase == 'DONE'
+    assert len(seq.result()['contact_positions_rad']) == 1

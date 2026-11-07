@@ -662,9 +662,11 @@ class SingleMotorHoming:
                             self.send_command(driver, s, torque)
                     if expired:
                         self.stale_commands_skipped = getattr(self, 'stale_commands_skipped', 0)+1
-                        continue
-                    with self.lock:
-                        self.reason = self.describe_sequence(sequence)
+                    else:
+                        with self.lock:
+                            self.reason = self.describe_sequence(sequence)
+                # Checked even when the last command expired: the sequence may have just
+                # finished, and update() after done must not run again.
                 if sequence.done:
                     result = sequence.result()
                     result['stale_commands_skipped'] = getattr(self, 'stale_commands_skipped', 0)
@@ -967,6 +969,12 @@ class KneeSeekSequence:
                              f'[{c.minimum:.6f}, {c.maximum:.6f}]')
         if abs(torque)>c.effort_limit:
             raise ValueError('Active search effort limit exceeded')
+        if self.done:
+            # Finished (released): never seek again. A caller that missed the done flag
+            # (its last command expired in the CAN lock queue) used to fall through to the
+            # seek below and press the stop again, recording a second contact (2026-11-07,
+            # first tripod homing: leg 1 hip 12 refused with two contacts in normal mode).
+            return None
         if self.last_time is not None and sample_time<=self.last_time:return None
         dt=0 if self.last_time is None else sample_time-self.last_time
         if dt>0 and abs(position-self.last_position)/dt>c.overspeed:
