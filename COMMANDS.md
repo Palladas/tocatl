@@ -55,6 +55,7 @@ Start every terminal with [A](#a-terminal-setup).
 | `~/tocatl/scripts/cmds/teleop.sh` | Xbox controller (joy_node + tocatl_teleop) |
 
 Extra controller parameters go after the script, e.g. `level1.sh -p can_transport:=v2`.
+Full reference for every script, plus the CAN-name and Xbox setup notes: [`scripts/cmds/README.md`](scripts/cmds/README.md).
 
 ## A. Terminal setup
 ```bash
