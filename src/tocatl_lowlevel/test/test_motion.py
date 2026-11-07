@@ -808,3 +808,23 @@ def test_operator_disarm_cuts_softening_short_and_a_faulty_motor_stops_first():
     with pytest.raises(ValueError, match='fault_response'):
         HardwareMotion(FakeBus(), commands(), fault_response='drop')
     assert isinstance(MotorFault(13, 'x'), ValueError)
+
+
+def test_disarm_acknowledges_a_latched_fault_once_the_motors_are_stopped():
+    """2026-11-07: after a fault the walker refused to start ('Controller FAULT before arming')
+    and the fault only cleared on an arm, which needs the walker: only a restart recovered."""
+    bus = FakeBus()
+    motion, c = armed_motion(bus, fault_response='soften', soften_s=0.5)
+    try:
+        motion.enable(True)
+        assert wait_for(lambda: motion.status()[0])
+        c.received = time.monotonic() - 10                     # watchdog fault
+        assert wait_for(lambda: motion.status()[1])
+        assert wait_for(lambda: not motion.status()[0] and 'Softened' in motion.status()[2], timeout=3)
+        assert motion.status()[1]                              # still latched
+        motion.enable(False)
+        armed, faulted, reason = motion.status()
+        assert not armed and not faulted and reason.startswith('Fault acknowledged by disarm')
+        assert motion.fault_count == 1                         # the controller's readiness clear stands
+    finally:
+        motion.close()

@@ -217,7 +217,16 @@ class HardwareMotion:
         with self.lock:
             if not enabled:
                 self.requested = False
-                self.reason = 'Operator disarmed'
+                if self.faulted and not self.armed and not self.stop_pending:
+                    # A disarm acknowledges a latched fault once the motors are confirmed
+                    # stopped. Otherwise it stayed latched until the next arm, and walk/perform/
+                    # play refuse to start in FAULT, so only a controller restart (losing every
+                    # home) recovered (2026-11-07). The fault already cleared readiness, so
+                    # nothing can move until the legs are rehomed.
+                    self.faulted = False
+                    self.reason = f'Fault acknowledged by disarm (was: {self.reason})'
+                else:
+                    self.reason = 'Operator disarmed'
                 self.commands.clear()
                 self.abort_soften.set()
                 return
