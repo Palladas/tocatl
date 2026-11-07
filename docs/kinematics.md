@@ -224,7 +224,11 @@ no front, so every heading and turn rate is the same gait.
 
 **Default stance:**
 - r 0.25 m from each yaw axis, the same as `stand`. Body 0.15 m below the mounting plane.
-- 3 s cycle, 4 cm step height, 6 cm stride.
+- 3 s cycle, 8 cm step height (4 cm until 2026-11-07, when the feet dragged), 6 cm stride.
+- At 8 cm, tripod and tetrapod pass these defaults. Ripple swings in 15% of the cycle, so it
+  needs a 5 s cycle to keep the geared hip motor under 5 rad/s.
+- At startup the walker checks every other gait at the start height. Only those that pass may be
+  switched to.
 
 **Offline checks** (`feasibility`, run before anything is streamed). The walk runs at its maximum
 command in 8 directions and turning both ways. It's checked for:

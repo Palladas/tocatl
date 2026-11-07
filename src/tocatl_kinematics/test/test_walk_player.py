@@ -111,13 +111,19 @@ def test_gait_change_waits_until_idle_and_yaw_must_start_radial(geometry, joint_
                      offsets=STANDING, clock=clock, lead=0.4)
     measured = dict(raw)
     run(s, clock, s.blend_s + 4.0, measured)
-    s.set_gait('ripple')
+    assert 'did not pass the startup checks' in s.set_gait('ripple')   # not verified: refused
+    assert s.pending_gait is None
+    s.allow_gaits(['ripple'])
+    assert s.set_gait('ripple') is None
     run(s, clock, 0.1, measured)
     assert s.gen.params.gait == 'tripod'          # still stepping: switches only once settled
     run(s, clock, 12.0, measured)
     assert s.gen.params.gait == 'ripple' and s.phase == 'WALK'
-    with pytest.raises(ValueError):
-        s.set_gait('gallop')
+    assert 'Unknown gait' in s.set_gait('gallop')
+    # Heights were verified for the start gait only, and gaits at the start height only.
+    s.allow_heights([s.start_params.body_height_m + 0.01])
+    assert s.request_height_step(+1) is None      # in ripple now: no height change
+    assert s.set_gait('tripod') is None           # back to the start gait is always allowed
     twisted = dict(raw)
     twisted[31] += 0.2
     assert 'leg 3 yaw' in WalkStreamer(geometry, session, WalkParams(), twisted, lambda: (0, 0, 0),

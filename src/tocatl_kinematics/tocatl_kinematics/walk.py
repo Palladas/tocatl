@@ -51,7 +51,7 @@ class WalkParams:
     gait: str = 'ripple'
     foot_radius_m: float = 0.25     # foot distance from each yaw axis (stand uses 0.25)
     body_height_m: float = 0.15     # feet this far below the mounting plane (stand height)
-    step_height_m: float = 0.04
+    step_height_m: float = 0.08     # swing lift; 0.04 dragged the feet (2026-11-07, tripod)
     period_s: float = 3.0           # one full gait cycle
     max_stride_m: float = 0.06      # largest foot travel during one stance
     max_vx_m_s: float = 0.05

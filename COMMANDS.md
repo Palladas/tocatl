@@ -327,11 +327,11 @@ or fully supported with the feet clear for the first runs. After the pull that a
 
 Scripted walk: forward for 6 s, then turn for 6 s, then settle and sit. Dry run first:
 ```bash
-ros2 run tocatl_kinematics tocatl_walk --gait ripple --script "6:0.02,0,0;6:0,0,0.08" --dry-run
+ros2 run tocatl_kinematics tocatl_walk --gait tripod --script "6:0.02,0,0;6:0,0,0.08" --dry-run
 ```
 Drive it live from `/cmd_vel` instead (teleop, or by hand in T3):
 ```bash
-ros2 run tocatl_kinematics tocatl_walk --gait ripple
+ros2 run tocatl_kinematics tocatl_walk --gait tripod
 ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.02}}"    # T3; Ctrl-C = stop walking
 ros2 topic pub --once /walk/stop std_msgs/msg/Empty                              # settle and sit
 ros2 topic pub --once /walk/gait std_msgs/msg/String "{data: tripod}"            # switches once settled
@@ -345,6 +345,12 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
   the immediate hard stop. Not yet tested on the robot: try it first with the robot supported.
 - **Stopping:** Ctrl-C once settles the feet and lowers the body, then disarms. Ctrl-C twice
   disarms at once, which **drops** the robot.
+- **Step height:** 0.08 m by default (`--step-height-m`; 0.04 dragged the feet). Tripod is
+  feasible up to 0.12 m and tetrapod up to 0.10 m.
+  - Ripple swings each foot in only 15% of the cycle, so at 0.08 m it needs
+    `--period-s 5` (or `--step-height-m 0.04`) to stay under the 5 rad/s hip motor speed.
+  - The dry run lists which gaits passed (`gaits.allowed`). X / `walk/gait` only switches to
+    those, and only at the start body height. The D-pad only changes height in the start gait.
 - Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to
   `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
 
@@ -357,7 +363,7 @@ these three:
 ```bash
 ros2 run joy joy_node --ros-args -p autorepeat_rate:=20.0     # T4: reads the pad
 ros2 run tocatl_kinematics tocatl_teleop                      # T5: pad -> /cmd_vel, stop, gait, arm
-ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
+ros2 run tocatl_kinematics tocatl_walk --gait tripod          # T2: the walker
 ```
 `~/tocatl/scripts/cmds/teleop.sh` starts T4 and T5 together; Ctrl-C stops both. Over USB, add
 `-p axis_dpad_y:=7` to teleop (e.g. `teleop.sh -p axis_dpad_y:=7`).
@@ -370,7 +376,7 @@ ros2 run tocatl_kinematics tocatl_walk --gait ripple          # T2: the walker
 | Right trigger | speed: 30% released, 100% pressed |
 | Start held 1 s | ARM: the body rises, then it follows the sticks |
 | B | stop: settle the feet, lower the body, disarm |
-| X | next gait (ripple, then tetrapod, then tripod), applied once the feet settle |
+| X | next gait (ripple, then tetrapod, then tripod), applied once the feet settle; only gaits that passed the startup check, and only at the start body height |
 | D-pad up/down | body height ±1 cm, among the heights the walker checked at startup (two steps each way) |
 | Back / Xbox button | **DISARM now**, the hard stop; a standing robot drops |
 

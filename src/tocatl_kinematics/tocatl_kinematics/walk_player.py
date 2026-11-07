@@ -95,6 +95,8 @@ class WalkStreamer:
         self.last_tick = self.last_advance = self.done_at = None
         self.stop_requested = False
         self.pending_gait = None
+        self.start_params = params
+        self.gaits = (params.gait,)                # gaits verified before streaming
         self.heights = (params.body_height_m,)   # body heights verified before streaming
         self.pending_height = None
         self.adjust = None                        # (from feet, to feet, seconds, generator) while ADJUST
@@ -105,10 +107,29 @@ class WalkStreamer:
     def request_stop(self):
         self.stop_requested = True
 
+    def allow_gaits(self, gaits):
+        """Gaits the operator may switch to (each checked at the start height beforehand)."""
+        self.gaits = tuple(sorted(set(gaits) | {self.start_params.gait}))
+
+    def _current(self):
+        gait = self.pending_gait or self.gen.params.gait
+        height = self.pending_height if self.pending_height is not None else self.gen.params.body_height_m
+        return gait, height
+
     def set_gait(self, name):
+        """Switch gait once the feet settle; returns a refusal message, or None if accepted.
+        Gaits are verified at the start body height only, so a switch away from the start
+        gait needs the start height (and a height change needs the start gait)."""
         if name not in GAITS:
-            raise ValueError(f'gait must be one of {sorted(GAITS)}')
+            return f'Unknown gait {name!r} (one of {sorted(GAITS)})'
+        if name not in self.gaits:
+            return (f'Gait {name} did not pass the startup checks with these settings '
+                    f'(verified: {", ".join(self.gaits)})')
+        gait, height = self._current()
+        if name != self.start_params.gait and abs(height - self.start_params.body_height_m) > 1e-9:
+            return f'Return to the start body height ({self.start_params.body_height_m:.3f} m) before switching gait'
         self.pending_gait = name
+        return None
 
     def allow_heights(self, heights):
         """Body heights the D-pad may choose (each checked beforehand), always including the start."""
@@ -118,7 +139,9 @@ class WalkStreamer:
         """Raise (direction > 0) or lower the body to the next verified height, once the feet
         have settled. Body height is the feet's depth below the mounting plane, so raising the
         body means a larger height."""
-        current = self.pending_height if self.pending_height is not None else self.gen.params.body_height_m
+        gait, current = self._current()
+        if gait != self.start_params.gait:
+            return None   # heights were verified for the start gait only
         options = [h for h in self.heights if (h > current + 1e-9 if direction > 0 else h < current - 1e-9)]
         if options:
             self.pending_height = min(options) if direction > 0 else max(options)
@@ -417,13 +440,18 @@ def main(argv=None):
     def cmd_vel():
         return twist['value'] if time.monotonic() - twist['at'] <= COMMAND_TIMEOUT_S else (0.0, 0.0, 0.0)
     node.create_subscription(Empty, 'walk/stop', lambda _: streamer and streamer.request_stop(), 1)
-    node.create_subscription(String, 'walk/gait', lambda m: streamer and streamer.set_gait(m.data), 1)
+    def on_gait(msg):
+        if streamer:
+            refusal = streamer.set_gait(msg.data.strip())
+            print(refusal or f'Gait -> {msg.data.strip()} (once the feet settle)', flush=True)
+    node.create_subscription(String, 'walk/gait', on_gait, 1)
 
     def on_height(msg):
         if streamer and msg.data:
             height = streamer.request_height_step(msg.data)
             print(f'Body height -> {height:.3f} m (once the feet settle)' if height is not None else
-                  f'No verified height further {"up" if msg.data > 0 else "down"}', flush=True)
+                  f'No verified height further {"up" if msg.data > 0 else "down"} (heights are verified '
+                  'for the start gait only)', flush=True)
     node.create_subscription(Int8, 'walk/height', on_height, 1)
     try:
         deadline = time.monotonic() + 5.0
@@ -464,6 +492,16 @@ def main(argv=None):
                     allowed.append(trial.body_height_m)
         streamer.allow_heights(allowed)
         report['heights'] = dict(allowed=list(streamer.heights), rejected=rejected)
+        gaits_ok, gaits_rejected = [], {}
+        for gait in sorted(set(GAITS) - {params.gait}):
+            problems = offline_report(geometry, joint_map, replace(params, gait=gait), args.mass_kg, limits,
+                                      args.max_motor_speed_rad_s)['violations']
+            if problems:
+                gaits_rejected[gait] = problems[:2]
+            else:
+                gaits_ok.append(gait)
+        streamer.allow_gaits(gaits_ok)
+        report['gaits'] = dict(allowed=list(streamer.gaits), rejected=gaits_rejected)
         report['yaw_not_radial'] = streamer.yaw_problems()
         report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
                                            torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)

@@ -75,10 +75,15 @@ def test_support_forces_and_stability_margin():
 
 
 def test_default_walks_are_feasible_for_16_kg_and_limits_are_enforced(geometry, joint_map):
-    for gait in GAITS:
-        report = feasibility(geometry, joint_map, WalkParams(gait=gait), 16.0)
-        assert report['ok'], (gait, report['violations'])
+    # 0.08 m steps (2026-11-07): tripod and tetrapod at the defaults; ripple's 15% swing needs a
+    # longer cycle (or a lower step) to stay under the 5 rad/s hip motor speed.
+    for params in (WalkParams(gait='tripod'), WalkParams(gait='tetrapod'),
+                   WalkParams(gait='ripple', period_s=5.0), WalkParams(gait='ripple', step_height_m=0.04)):
+        report = feasibility(geometry, joint_map, params, 16.0)
+        assert report['ok'], (params, report['violations'])
         assert report['peak_torque_nm'] < 0.9 * 12.0
+    ripple = feasibility(geometry, joint_map, WalkParams(gait='ripple'), 16.0)
+    assert not ripple['ok'] and any('rad/s' in v for v in ripple['violations'])
     t = simulate(geometry, WalkParams(gait='tripod'), [(6.0, (0.05, 0.0, 0.0))])
     assert any('Nm' in v for v in check(t, geometry, joint_map, 16.0, torque_limit_nm=2.0)['violations'])
     assert any('yaw needs' in v for v in check(t, geometry, joint_map, 16.0, yaw_envelope=(-0.01, 0.01))['violations'])
