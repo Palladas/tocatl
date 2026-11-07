@@ -208,18 +208,26 @@ $CTL --ros-args --params-file $C/homing-hip-knee.yaml --params-file $C/motion-st
 ## D. Homing (T3)
 Use this with a C2, C3 or C4 controller running, robot supported, legs clear.
 
-**Home legs one at a time** (proven on the robot). Home-all now runs the tripods (legs 1/3/5,
-then 2/4/6). Its freshness fix passes the timing model but is **not yet tested on the robot**;
-until it is, keep homing one leg at a time. Home-all, once tested: `ros2 service call /motors/home std_srvs/srv/Trigger`.
+**Home in tripods:** legs 1, 3, 5 together (one leg per bus), then 2, 4, 6.
 ```bash
-for n in 1 2 3 4 5 6; do ros2 service call /motors/leg_$n/home std_srvs/srv/Trigger; done
+ros2 service call /motors/home std_srvs/srv/Trigger               # both tripods: 1/3/5, then 2/4/6
+ros2 service call /motors/tripod_135/home std_srvs/srv/Trigger    # one tripod only
+ros2 service call /motors/tripod_246/home std_srvs/srv/Trigger
 ```
-- Each call returns straight away and homing runs in the background.
-- Wait for `Leg N pitch/knee READY` in T1's log before calling the next leg. Alternatively,
-  run them one by one:
-  ```bash
-  ros2 service call /motors/leg_1/home std_srvs/srv/Trigger
-  ```
+- Each call returns straight away and homing runs in the background. Wait for
+  `Legs 1, 3, 5 pitch/knee READY` (or a fault) in T1's log before the next call. A call while
+  homing is running is refused with `Leg homing already active`.
+- A fault in one leg cancels the other legs of its tripod. Legs that already finished stay READY.
+- **Robot test status:** the tripod batching passes the timing model, but has **not yet run on
+  the robot**. For the first run, home one tripod (`tripod_135`), and watch T1 for
+  `fault-status age` refusals before running the second.
+- Only legs in the controller's `homing.legs` are homed. A tripod service homes the part of its
+  tripod that is selected.
+
+**One leg at a time** (proven on the robot; the fallback if a tripod run refuses):
+```bash
+ros2 service call /motors/leg_1/home std_srvs/srv/Trigger    # wait for "Leg 1 pitch/knee READY", then leg_2, ...
+```
 
 **Level 4 only.** After every leg is READY, declare the yaw references. This holds the yaws
 where they are now:

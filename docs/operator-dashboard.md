@@ -66,8 +66,7 @@ Each controller start creates `~/tocatl-runs/dashboard-<profile>-<UTC stamp>/` h
 ## Homing all legs together
 
 **Home all selected legs** homes the tripods: legs 1-3-5, then 2-4-6, six motors at once
-(since 2026-11-05). The dashboard's button labels still say "pairs 1+4, 2+5, 3+6"; the
-controller decides the groups.
+(since 2026-11-05; the button labels say so since 2026-11-07). The controller decides the groups.
 
 History: tripods were tried on 2026-10-27 and removed. Every CAN message costs the driver
 10 ms, and one lock serializes all buses, so six motors' fault-status feedback aged past the

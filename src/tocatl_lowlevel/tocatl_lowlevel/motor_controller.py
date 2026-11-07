@@ -91,6 +91,14 @@ class MotorController(Node):
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
+            # One tripod at a time (motors/home runs both, 1/3/5 then 2/4/6), e.g. motors/tripod_135/home.
+            from tocatl_lowlevel.homing import TRIPODS
+            leg_ids = getattr(self.homing, 'leg_ids', ())
+            tripods = [tuple(leg for leg in tripod if leg in leg_ids) for tripod in TRIPODS]
+            self.tripod_homing_services = [
+                self.create_service(Trigger, f'motors/tripod_{"".join(map(str, tripod))}/home',
+                                    partial(self.home, legs=tripod))
+                for tripod in tripods if tripod]
         self.readiness.log = lambda message: self.get_logger().warning(message)
         self.motor_subscription = self.create_subscription(
             MotorCommand, 'motor_command', self.motor_command,
@@ -139,18 +147,21 @@ class MotorController(Node):
         response.message = 'Mock motors enabled' if request.data else 'Mock motors disabled'
         return response
 
-    def home(self, request, response, leg_id=None):
+    def home(self, request, response, leg_id=None, legs=None):
         try:
             with self.motion.lock:
                 if self.motion.requested or self.motion.armed or self.motion.stop_pending:
                     raise ValueError('Disarm and confirm stopped motors before homing')
             self.commands.clear()
-            if leg_id is None:
+            if legs is not None:
+                self.homing.start(list(legs))
+            elif leg_id is None:
                 self.homing.start()
             else:
                 self.homing.start([leg_id])
             self.homing_was_active = True
-            selection = f'leg {leg_id}' if leg_id is not None else 'configured legs'
+            selection = (f'legs {"/".join(map(str, legs))}' if legs is not None else
+                         f'leg {leg_id}' if leg_id is not None else 'configured legs (tripods 1/3/5, then 2/4/6)')
             self.get_logger().info(f'Homing started for {selection}')
             response.success, response.message = True, 'Homing requested'
         except ValueError as error:

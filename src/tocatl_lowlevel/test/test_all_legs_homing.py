@@ -244,6 +244,8 @@ def test_all_leg_ros_profile_and_service_dispatch_without_can(monkeypatch, tmp_p
         assert requested == list(HIP_KNEE_IDS)
         assert {s.srv_name.strip('/') for s in node.leg_homing_services} == {
             f'motors/leg_{leg}/home' for leg in range(1,7)}
+        assert {s.srv_name.strip('/') for s in node.tripod_homing_services} == {
+            'motors/tripod_135/home', 'motors/tripod_246/home'}
         rejected = node.leg_homing_services[1].callback(Trigger.Request(), Trigger.Response())
         assert not rejected.success and 'Leg 2: configure' in rejected.message
         assert not hw.events
