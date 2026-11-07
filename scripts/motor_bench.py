@@ -196,7 +196,7 @@ class Bench:
         self.error = ''
         self.original_limit = None
         self.reference = 0.0          # host-side position reference (never written to the motor)
-        self.jog = dict(target=None, position=None, speed=1.0, kp=10.0, kd=1.0, velocity=0.0)
+        self.jog = dict(target=None, position=None, speed=1.0, kp=10.0, kd=1.0, velocity=0.0, stop_on_overspeed=True)
         self.test = None
         self.results = []
         self.run_dir = None
@@ -411,7 +411,10 @@ class Bench:
 
     # ---- rotation ------------------------------------------------------------------------
     def jog_params(self, data):
-        return dict(speed=number(data, 'speed', 0.05, MAX_JOG_SPEED, 1.0), kp=number(data, 'kp', 0.5, MAX_KP, 10.0),
+        stop_on_overspeed = data.get('stop_on_overspeed', True)
+        if type(stop_on_overspeed) is not bool:
+            raise ValueError('stop_on_overspeed must be true or false')
+        return dict(stop_on_overspeed=stop_on_overspeed, speed=number(data, 'speed', 0.05, MAX_JOG_SPEED, 1.0), kp=number(data, 'kp', 0.5, MAX_KP, 10.0),
                     kd=number(data, 'kd', 0.0, MAX_KD, 1.0), limit=number(data, 'torque_limit', 0.1, MAX_TORQUE_NM, 2.0))
 
     def rotate(self, data):
@@ -597,7 +600,7 @@ class Bench:
                                                     t['direction'] * t['command'], 0.0, t['kd']))
                     elif self.mode in ('jog', 'hold'):
                         j = self.jog
-                        if abs(fb['velocity']) > j['speed'] * 1.5 + 1.0:
+                        if j['stop_on_overspeed'] and abs(fb['velocity']) > j['speed'] * 1.5 + 1.0:
                             stop_reason = f"Speed {fb['velocity']:.2f} rad/s over the jog guard"
                         else:
                             gap = j['target'] - j['position']
@@ -645,7 +648,8 @@ class Bench:
                 torque_limit=self.param(LIMIT_TORQUE), test=test, results=self.results,
                 run_dir=str(self.run_dir) if self.run_dir else None,
                 jog=dict(target_deg=None if self.jog['target'] is None else
-                         math.degrees(self.jog['target'] - self.reference)))
+                         math.degrees(self.jog['target'] - self.reference),
+                          stop_on_overspeed=self.jog['stop_on_overspeed']))
 
 
 def clean(value):

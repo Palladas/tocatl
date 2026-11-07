@@ -35,6 +35,12 @@ them unpowered or make sure the test motor's ID differs from theirs.
 - Positions are shown relative to a host-side reference (**Set position reference here**).
   The motor's own position range is ±4π rad.
 
+Programmatic `/rotate` requests may set `stop_on_overspeed: false` to disable the
+measured-speed abort for that position move and its final hold. It defaults to
+`true`; the commanded ramp speed, torque cap, feedback freshness, motor-fault,
+temperature and page-heartbeat checks remain active. `/state` reports this option
+under `jog.stop_on_overspeed`. The spin and torque-test speed guards are separate.
+
 ## 3. Maximum-torque test
 
 The output is blocked by the scale. Torque is commanded as feedforward with kp 0, so all of

@@ -217,6 +217,40 @@ class BenchTest(unittest.TestCase):
         self.assertIn('stopped polling', bench.error)
         self.assertFalse(motor.enabled)
 
+    def test_rotation_overspeed_abort_defaults_on(self):
+        motor = FakeMotor()
+        motor.velocity = 5.0
+        bench, _ = self.bench(motor)
+        bench.select(dict(motor_id=127))
+        self.assertTrue(wait_for(lambda: bench.feedback is not None))
+        bench.rotate(dict(delta_deg=10, speed=0.2))
+        self.assertTrue(wait_for(lambda: not bench.enabled))
+        self.assertIn('Speed', bench.error)
+
+    def test_rotation_can_disable_overspeed_abort_but_faults_still_stop(self):
+        motor = FakeMotor()
+        motor.velocity = 5.0
+        bench, sent = self.bench(motor)
+        bench.select(dict(motor_id=127))
+        self.assertTrue(wait_for(lambda: bench.feedback is not None))
+        bench.rotate(dict(delta_deg=10, speed=0.2, stop_on_overspeed=False))
+        self.assertTrue(wait_for(lambda: sum(a >> 24 == 1 for a, _ in sent) >= 8))
+        self.assertTrue(bench.enabled)
+        self.assertFalse(bench.state()['jog']['stop_on_overspeed'])
+        with bench.lock:
+            bench.faults = ['Under voltage']
+        self.assertTrue(wait_for(lambda: not bench.enabled))
+        self.assertIn('Under voltage', bench.error)
+
+    def test_rotation_rejects_non_boolean_overspeed_option_before_enabling(self):
+        motor = FakeMotor()
+        bench, _ = self.bench(motor)
+        bench.select(dict(motor_id=127))
+        self.assertTrue(wait_for(lambda: bench.feedback is not None))
+        with self.assertRaisesRegex(ValueError, 'stop_on_overspeed'):
+            bench.rotate(dict(delta_deg=10, stop_on_overspeed='false'))
+        self.assertFalse(motor.enabled)
+
     def test_rotation_ramps_to_target(self):
         motor = FakeMotor()
         bench, sent = self.bench(motor)
