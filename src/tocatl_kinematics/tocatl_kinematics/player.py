@@ -151,7 +151,6 @@ class Streamer:
         self.finished_at = None
         self.max_lag = (None, 0.0)  # (motor_id, rad) seen while playing
         self.rate = 0.0             # current playback rate (1 = real time)
-        self.paused = False         # set by a caller (tocatl_perform's deadman): hold, don't advance
 
     def index_at(self, plan_time):
         return min(int(np.searchsorted(self.trajectory.times, plan_time)), len(self.trajectory.times) - 1)
@@ -211,9 +210,6 @@ class Streamer:
         duration = float(self.trajectory.times[-1])
         dt, self.last_tick = now - self.last_tick, now
         self.rate = 0.0
-        if self.paused:
-            self.last_advance = now
-            return self.targets(self.index_at(self.progress), measured, 0.0)
         if self.progress < duration:
             lagging = self.lag(self.index_at(self.progress), measured)
             self.rate = self.playback_rate(lagging[1])

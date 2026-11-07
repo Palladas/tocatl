@@ -15,9 +15,6 @@ Sequence:
 - ``walk/stop`` (teleop B): after the current cue, EXIT folds the legs from the ready pose to a
   fixed rest pose just off the homed stops (REST_OFFSET_RAD), planned at startup, then the
   performer requests a disarm.
-- Deadman (``walk/deadman`` false from tocatl_teleop: LB released or the pad lost): the unfold, a
-  cue or the fold-back pauses in place and resumes when LB is held again. Ignored without fresh
-  deadman messages (cues sent by hand).
 - Disarm or FAULT at any time stops streaming targets and returns to REST. Stale
   robot_state, a motion stall or Ctrl-C stop the node (Ctrl-C requests a disarm first).
 
@@ -59,7 +56,6 @@ DEFAULT_KD = 1.0
 # stop (homing directions are -1, so +). A fixed pose, not the pose at arming: re-arming with the
 # legs still near the ready pose made the old reversed-unfold fold-back zero length (2026-11-07).
 REST_OFFSET_RAD = 0.10
-DEADMAN_FRESH_S = 0.5       # walk/deadman messages older than this are ignored (no teleop)
 
 # name -> PlaneMotion overrides. All circles are centred on the ready pose. Sizes raised on
 # 2026-11-07 (radius 0.04 -> 0.10 m, bloom 0.42/+0.10 -> 0.45/+0.15, reach -0.08 -> -0.10):
@@ -142,7 +138,6 @@ class Performer:
         self.stop_requested = False
         self.events = []             # ('log', text) / ('disarm', reason)
         self.reason = ''
-        self.deadman = None          # (held, received) from walk/deadman
         # Unfold only on a fresh arm: not if the controller was already armed at start, nor
         # in the ticks between a requested disarm (after EXIT or a stall) and the controller
         # leaving ARMED.
@@ -159,13 +154,6 @@ class Performer:
             self._log(f'Cue {name} ignored: folding back')
         else:
             self.pending = name
-
-    def set_deadman(self, held, received):
-        self.deadman = (bool(held), received)
-
-    def deadman_released(self):
-        return (self.deadman is not None and not self.deadman[0]
-                and self.clock() - self.deadman[1] <= DEADMAN_FRESH_S)
 
     def request_stop(self):
         if self.phase in ('ENTER', 'READY', 'CUE'):
@@ -219,10 +207,6 @@ class Performer:
         return self._step_streamer(safety_state, state_age, measured)
 
     def _step_streamer(self, safety_state, state_age, measured):
-        paused = self.deadman_released()
-        if paused != self.streamer.paused:
-            self._log(f'Deadman released: {self.playing} paused' if paused else f'Deadman held: {self.playing} resumes')
-        self.streamer.paused = paused
         targets = self.streamer.step(safety_state, state_age, measured)
         if targets is not None:
             return targets
@@ -326,7 +310,7 @@ def main(argv=None):
 
     import rclpy
     from rclpy.signals import SignalHandlerOptions
-    from std_msgs.msg import Bool, Empty, String
+    from std_msgs.msg import Empty, String
     from std_srvs.srv import SetBool
     from tocatl_interfaces.msg import MotorCommand, MotorTarget, RobotState
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
@@ -399,7 +383,6 @@ def main(argv=None):
                               lead_for_step(limits.max_step), fold)
         node.create_subscription(String, 'perform/cue', lambda m: performer.request_cue(m.data.strip()), 10)
         node.create_subscription(Empty, 'walk/stop', lambda m: performer.request_stop(), 10)
-        node.create_subscription(Bool, 'walk/deadman', lambda m: performer.set_deadman(m.data, time.monotonic()), 1)
         print(f'Ready: cues {sorted(feasible)}. Arm (teleop: hold Start 1 s) to unfold to the ready pose; '
               'B folds back and disarms; Back disarms now.', flush=True)
         last_phase = None

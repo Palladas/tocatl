@@ -212,42 +212,6 @@ def test_robot_state_with_declared_yaw_gives_the_walker_every_joint(joint_map):
     assert joints_from_raw(session_map, raw) == {}
 
 
-def test_releasing_the_deadman_freezes_the_walk_in_place_and_resumes(geometry, joint_map):
-    """2026-11-07: releasing LB should stop all motion, not finish the stride."""
-    from tocatl_kinematics.walk_player import STALL_S
-    session, raw = resting(geometry, joint_map)
-    clock = Clock()
-    s = WalkStreamer(geometry, session, WalkParams(gait='tripod'), raw, lambda: (0.03, 0.0, 0.0),
-                     offsets=STANDING, clock=clock, lead=0.4)
-    measured = dict(raw)
-    s.set_deadman(True, clock.t)
-    run(s, clock, s.blend_s + 1.3, measured)
-    assert s.phase == 'WALK'
-    phase_before = s.gen.phase
-    frozen_at = dict(measured)
-    for _ in range(int((STALL_S + 1.0) / 0.02)):         # longer than a stall: no stall stop
-        s.set_deadman(False, clock.t)
-        run(s, clock, 0.02, measured)
-    assert s.frozen and s.phase == 'WALK' and s.gen.phase == phase_before
-    assert max(abs(measured[m] - frozen_at[m]) for m in measured) < 1e-9
-    assert s.gen.command == (0.0, 0.0, 0.0)              # resumes from zero velocity
-    for _ in range(25):
-        s.set_deadman(True, clock.t)
-        run(s, clock, 0.02, measured)
-    assert not s.frozen and s.gen.phase != phase_before and s.gen.command[0] > 0
-
-
-def test_a_stale_deadman_is_ignored(geometry, joint_map):
-    session, raw = resting(geometry, joint_map)
-    clock = Clock()
-    s = WalkStreamer(geometry, session, WalkParams(gait='tripod'), raw, lambda: (0.03, 0.0, 0.0),
-                     offsets=STANDING, clock=clock, lead=0.4)
-    s.set_deadman(False, clock.t)                        # teleop said released, then went away
-    measured = dict(raw)
-    run(s, clock, s.blend_s + 1.0, measured)
-    assert not s.frozen and s.phase == 'WALK'
-
-
 def test_direction_changes_take_effect_within_a_fraction_of_a_second(geometry):
     from tocatl_kinematics.walk import WalkGenerator
     gen = WalkGenerator(geometry, WalkParams(gait='tripod'))

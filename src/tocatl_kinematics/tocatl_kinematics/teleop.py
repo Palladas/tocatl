@@ -5,7 +5,7 @@
 | Left stick | walk in any direction (/cmd_vel linear x, y) |
 | Right stick left/right | turn (/cmd_vel angular z) |
 | Right trigger | speed: 30% when released, 100% fully pressed |
-| **LB held** | **deadman**: the robot only moves while LB is held. Releasing it (or losing the pad) freezes walking and cues in place (walk/deadman false) |
+| **LB held** | **deadman**: the robot only walks while LB is held |
 | Start held 1 s | arm (/motors/enable true): tocatl_walk rises, then walks |
 | B | stop: walk/stop, which settles the feet, lowers the body and disarms |
 | X | next gait: ripple, then tetrapod, then tripod (walk/gait; applied once the feet settle) |
@@ -16,8 +16,7 @@
 Cues are only sent while LB is held, so a stray press does nothing. tocatl_walk ignores them,
 and tocatl_perform ignores /cmd_vel: run one of the two, never both.
 
-Velocity is only non-zero while LB is held and /joy is fresh, and ``walk/deadman`` (Bool) says
-the same every tick, so tocatl_walk and tocatl_perform freeze rather than finish a step or a cue. If no /joy arrives for
+Velocity is only non-zero while LB is held and /joy is fresh. If no /joy arrives for
 JOY_TIMEOUT_S (pad out of range or unplugged), the node publishes zero, so the walker
 settles. Maximum speeds are tocatl_walk's; the walker clamps them again, and teleop never
 widens a limit. Button and axis numbers can be
@@ -93,7 +92,6 @@ class TeleopMapper:
     armed_this_hold: bool = False
     events: list = field(default_factory=list)   # 'arm', 'disarm', 'stop', ('gait'|'height'|'cue', value)
     twist: tuple = (0.0, 0.0, 0.0)
-    lb_held: bool = False
 
     def _button(self, buttons, index):
         return index < len(buttons) and bool(buttons[index])
@@ -129,8 +127,7 @@ class TeleopMapper:
         if step and step != (1 if self.previous_dpad > 0.5 else -1 if self.previous_dpad < -0.5 else 0):
             self.events.append(('height', step))
         self.previous_dpad = dpad
-        self.lb_held = self._button(buttons, lay.button_lb)
-        if not self.lb_held:
+        if not self._button(buttons, lay.button_lb):
             self.twist = (0.0, 0.0, 0.0)
             return
         trigger = self._axis(axes, lay.axis_rt, 1.0)
@@ -145,10 +142,6 @@ class TeleopMapper:
             return (0.0, 0.0, 0.0)
         return self.twist
 
-    def deadman(self, now):
-        """True only while LB is held and /joy is fresh."""
-        return self.lb_held and self.last_joy is not None and now - self.last_joy <= JOY_TIMEOUT_S
-
     def take_events(self):
         events, self.events = self.events, []
         return events
@@ -158,7 +151,7 @@ def main(argv=None):
     import rclpy
     from geometry_msgs.msg import Twist
     from sensor_msgs.msg import Joy
-    from std_msgs.msg import Bool, Empty, Int8, String
+    from std_msgs.msg import Empty, Int8, String
     from std_srvs.srv import SetBool
     rclpy.init(args=argv)
     node = rclpy.create_node('tocatl_teleop')
@@ -172,7 +165,6 @@ def main(argv=None):
     gait = node.create_publisher(String, 'walk/gait', 1)
     height = node.create_publisher(Int8, 'walk/height', 1)
     cue = node.create_publisher(String, 'perform/cue', 1)
-    deadman = node.create_publisher(Bool, 'walk/deadman', 1)
     enable = node.create_client(SetBool, 'motors/enable')
     node.create_subscription(Joy, 'joy', lambda m: mapper.update(m.axes, m.buttons, time.monotonic()), 10)
 
@@ -202,9 +194,7 @@ def main(argv=None):
             else:
                 gait.publish(String(data=event[1]))
                 node.get_logger().info(f'Gait {event[1]} (applies once the feet settle)')
-        now = time.monotonic()
-        deadman.publish(Bool(data=mapper.deadman(now)))
-        vx, vy, wz = mapper.command(now)
+        vx, vy, wz = mapper.command(time.monotonic())
         msg = Twist()
         msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
         cmd_vel.publish(msg)
@@ -217,7 +207,6 @@ def main(argv=None):
         pass
     finally:
         cmd_vel.publish(Twist())
-        deadman.publish(Bool(data=False))
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
