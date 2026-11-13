@@ -1,6 +1,6 @@
 import pytest
 
-from tocatl_kinematics.teleop import ARM_HOLD_S, JOY_TIMEOUT_S, PadLayout, TeleopMapper, shape
+from tocatl_kinematics.teleop import ARM_HOLD_S, JOY_TIMEOUT_S, PadLayout, TeleopLimits, TeleopMapper, shape
 
 L = PadLayout()
 
@@ -20,9 +20,10 @@ def test_sticks_only_move_the_robot_while_the_deadman_is_held():
     assert m.command(0.0) == (0.0, 0.0, 0.0)
     m.update(*pad(ly=1.0, rx=-1.0, lb=True), now=0.05)
     vx, vy, wz = m.command(0.05)
-    assert vx == pytest.approx(0.3 * 0.05) and vy == 0.0 and wz == pytest.approx(-0.3 * 0.2)
+    lim = TeleopLimits()
+    assert vx == pytest.approx(0.3 * lim.max_vx_m_s) and vy == 0.0 and wz == pytest.approx(-0.3 * lim.max_wz_rad_s)
     m.update(*pad(ly=1.0, rt=-1.0, lb=True), now=0.1)           # trigger fully pressed: full speed
-    assert m.command(0.1)[0] == pytest.approx(0.05)
+    assert m.command(0.1)[0] == pytest.approx(lim.max_vx_m_s)
     m.update(*pad(ly=1.0), now=0.15)                            # LB released
     assert m.command(0.15) == (0.0, 0.0, 0.0)
 
@@ -49,7 +50,7 @@ def test_buttons_fire_once_per_press_and_arm_needs_a_hold():
     m.update(*pad(), now=0.15)
     m.update(*pad(x=True), now=0.2)
     m.update(*pad(back=True), now=0.25)
-    assert m.take_events() == ['stop', ('gait', 'tetrapod'), ('gait', 'tripod'), 'disarm']
+    assert m.take_events() == ['stop', 'disarm']                # X gait cycling disabled (Pi, 2026-11-13)
     m.update(*pad(start=True), now=1.0)
     m.update(*pad(start=True), now=1.0 + ARM_HOLD_S / 2)
     assert m.take_events() == []                                # a tap does not arm

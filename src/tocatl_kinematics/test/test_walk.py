@@ -41,8 +41,8 @@ def test_gait_lifts_its_groups_and_every_leg_steps(geometry, gait, most_up):
 
 def test_commands_are_clamped_to_speed_and_stride(geometry):
     fast = WalkGenerator(geometry, WalkParams(gait='tripod', period_s=1.0))
-    assert fast.clamp((1.0, 0.0, 0.0))[0] == pytest.approx(0.05)    # speed limit
-    gen = WalkGenerator(geometry, WalkParams(gait='tripod'))
+    assert fast.clamp((1.0, 0.0, 0.0))[0] == pytest.approx(fast.params.max_vx_m_s)    # speed limit
+    gen = WalkGenerator(geometry, WalkParams(gait='tripod', max_stride_m=0.06))   # stride binds before speed
     vx, vy, wz = gen.clamp((1.0, 0.0, 0.0))
     assert vx * gen.params.stance_s == pytest.approx(gen.params.max_stride_m)   # stride limit (3 s cycle)
     vx, vy, wz = gen.clamp((0.0, 0.0, 1.0))
@@ -74,16 +74,25 @@ def test_support_forces_and_stability_margin():
     assert stability_margin({1: (0, 0), 2: (1, 0)}) == float('-inf')
 
 
-def test_default_walks_are_feasible_for_16_kg_and_limits_are_enforced(geometry, joint_map):
-    # 0.08 m steps (2026-11-07): tripod and tetrapod at the defaults; ripple's 15% swing needs a
+# Walk parameters verified on the robot 2026-11-07, before the Pi defaults were widened (2026-11-13).
+VERIFIED = dict(step_height_m=0.08, max_stride_m=0.06, max_vx_m_s=0.05, max_vy_m_s=0.05)
+
+
+def test_verified_walks_are_feasible_for_16_kg_and_limits_are_enforced(geometry, joint_map):
+    # 0.08 m steps (2026-11-07): tripod and tetrapod at these values; ripple's 15% swing needs a
     # longer cycle (or a lower step) to stay under the 5 rad/s hip motor speed.
-    for params in (WalkParams(gait='tripod'), WalkParams(gait='tetrapod'),
-                   WalkParams(gait='ripple', period_s=5.0), WalkParams(gait='ripple', step_height_m=0.04)):
+    for params in (WalkParams(gait='tripod', **VERIFIED), WalkParams(gait='tetrapod', **VERIFIED),
+                   WalkParams(gait='ripple', period_s=5.0, **VERIFIED),
+                   WalkParams(gait='ripple', **{**VERIFIED, 'step_height_m': 0.04})):
         report = feasibility(geometry, joint_map, params, 16.0)
         assert report['ok'], (params, report['violations'])
         assert report['peak_torque_nm'] < 0.9 * 12.0
-    ripple = feasibility(geometry, joint_map, WalkParams(gait='ripple'), 16.0)
+    ripple = feasibility(geometry, joint_map, WalkParams(gait='ripple', **VERIFIED), 16.0)
     assert not ripple['ok'] and any('rad/s' in v for v in ripple['violations'])
+    # The widened defaults are NOT feasible: full stride needs hip yaw beyond the controller
+    # envelope, so a default walk only runs with walk_player --override.
+    wide = feasibility(geometry, joint_map, WalkParams(gait='tripod'), 16.0)
+    assert not wide['ok'] and any('yaw needs' in v for v in wide['violations'])
     t = simulate(geometry, WalkParams(gait='tripod'), [(6.0, (0.05, 0.0, 0.0))])
     assert any('Nm' in v for v in check(t, geometry, joint_map, 16.0, torque_limit_nm=2.0)['violations'])
     assert any('yaw needs' in v for v in check(t, geometry, joint_map, 16.0, yaw_envelope=(-0.01, 0.01))['violations'])
