@@ -99,3 +99,9 @@ def test_invalid_parameters_refused():
     for bad in (dict(gait='gallop'), dict(period_s=0.1), dict(step_height_m=0.5), dict(max_stride_m=0.0)):
         with pytest.raises(ValueError):
             WalkParams(**bad).validate()
+
+
+def test_override_flag_defaults_off():
+    from tocatl_kinematics.walk_player import build_parser
+    assert not build_parser().parse_args([]).override
+    assert build_parser().parse_args(['--override']).override

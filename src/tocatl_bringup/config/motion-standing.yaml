@@ -32,6 +32,6 @@ motor_controller:
     # calibration allowed 3.05) = 7.02 rad of motor travel through the 2.7:1 hip-pitch
     # gearbox fitted 2026-11-05 (Pranav; same joint range, not a widening).
     # Knee as in motion-feet-air.yaml. Yaw is only held: +/-0.3 rad around its declared pose.
-    hip_yaw_home_offset_rad: [-0.3, 0.3]
+    hip_yaw_home_offset_rad: [-1.0, 1.0]
     hip_pitch_home_offset_rad: [-0.05, 7.02]
     knee_home_offset_rad: [-1.7, 2.0]

@@ -62,8 +62,8 @@ class PadLayout:
 
 @dataclass(frozen=True)
 class TeleopLimits:
-    max_vx_m_s: float = 0.05
-    max_vy_m_s: float = 0.05
+    max_vx_m_s: float = 0.2
+    max_vy_m_s: float = 0.2
     max_wz_rad_s: float = 0.2
     deadzone: float = 0.12
     expo: float = 0.5           # 0 = linear, 1 = cubic
@@ -107,9 +107,9 @@ class TeleopMapper:
             self.events.append('disarm')
         if pressed(lay.button_b):
             self.events.append('stop')
-        if pressed(lay.button_x):
-            self.gait_index = (self.gait_index + 1) % len(GAIT_CYCLE)
-            self.events.append(('gait', GAIT_CYCLE[self.gait_index]))
+        #if pressed(lay.button_x):
+            #self.gait_index = (self.gait_index + 1) % len(GAIT_CYCLE)
+            #self.events.append(('gait', GAIT_CYCLE[self.gait_index]))
         if self._button(buttons, lay.button_start):
             self.start_since = now if self.start_since is None else self.start_since
             if not self.armed_this_hold and now - self.start_since >= ARM_HOLD_S:

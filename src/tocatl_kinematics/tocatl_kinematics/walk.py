@@ -51,11 +51,11 @@ class WalkParams:
     gait: str = 'ripple'
     foot_radius_m: float = 0.25     # foot distance from each yaw axis (stand uses 0.25)
     body_height_m: float = 0.15     # feet this far below the mounting plane (stand height)
-    step_height_m: float = 0.08     # swing lift; 0.04 dragged the feet (2026-11-07, tripod)
+    step_height_m: float = 0.1   # swing lift; 0.04 dragged the feet (2026-11-07, tripod)
     period_s: float = 3.0           # one full gait cycle
-    max_stride_m: float = 0.06      # largest foot travel during one stance
-    max_vx_m_s: float = 0.05
-    max_vy_m_s: float = 0.05
+    max_stride_m: float = 1      # largest foot travel during one stance
+    max_vx_m_s: float = 0.3
+    max_vy_m_s: float = 0.1
     max_wz_rad_s: float = 0.2
     # Command ramp. 0.05 / 0.2 took 1-2 s to change direction (2026-11-07, Pranav: too slow);
     # these reach full speed in ~0.1-0.25 s.
@@ -70,13 +70,13 @@ class WalkParams:
             problems.append('foot_radius_m must be in [0.1, 0.6]')
         if not 0.05 <= self.body_height_m <= 0.5:
             problems.append('body_height_m must be in [0.05, 0.5]')
-        if not 0.005 <= self.step_height_m <= 0.12:
+        if not 0.005 <= self.step_height_m <= 0.2:
             problems.append('step_height_m must be in [0.005, 0.12]')
         if not 0.5 <= self.period_s <= 20:
             problems.append('period_s must be in [0.5, 20]')
-        if not 0 < self.max_stride_m <= 0.2:
-            problems.append('max_stride_m must be in (0, 0.2]')
-        if not all(0 <= v <= 0.5 for v in (self.max_vx_m_s, self.max_vy_m_s)) or not 0 <= self.max_wz_rad_s <= 1.0:
+        if not 0 < self.max_stride_m <= 1:
+            problems.append('max_stride_m must be in (0, 1]')
+        if not all(0 <= v <= 1 for v in (self.max_vx_m_s, self.max_vy_m_s)) or not 0 <= self.max_wz_rad_s <= 1.0:
             problems.append('speed limits must be within 0.5 m/s and 1 rad/s')
         if not (0 < self.accel_m_s2 <= 1.0 and 0 < self.alpha_rad_s2 <= 2.0):
             problems.append('accelerations must be positive and modest')

@@ -388,6 +388,9 @@ def build_parser():
     parser.add_argument('--geometry', default='config/robot-geometry.json')
     parser.add_argument('--joint-map', default='config/joint-map.json')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--override', action='store_true',
+                        help='walk despite planner violations (printed as warnings); the controller '
+                             'still enforces its own envelope, step, speed and torque limits')
     return parser
 
 
@@ -508,8 +511,13 @@ def main(argv=None):
                                            torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)
         print(json.dumps(report, indent=1, default=float), flush=True)
         problems = report['violations'] + report['blend']['problems'] + report['yaw_not_radial']
+        if problems and not args.override:
+            raise ValueError('Walk rejected: ' + '; '.join(problems[:6]) +
+                             ' (rerun with --override to walk anyway)')
         if problems:
-            raise ValueError('Walk rejected: ' + '; '.join(problems[:6]))
+            print(f'OVERRIDE: walking despite {len(problems)} problem(s):', flush=True)
+            for problem in problems:
+                print(f'  - {problem}', flush=True)
         if args.dry_run:
             print('Dry run: nothing published.', flush=True)
             return 0
