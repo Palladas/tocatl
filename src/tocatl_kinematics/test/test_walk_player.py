@@ -5,7 +5,8 @@ from tocatl_kinematics.body import BodyPose, body_fk, joints_from_raw, neutral_s
 from tocatl_kinematics.joint_map import motor_ids
 from tocatl_kinematics.motions import EnvelopeOffsets
 from tocatl_kinematics.walk import WalkParams, solve
-from tocatl_kinematics.walk_player import ScriptCommands, WalkStreamer, parse_script
+from tocatl_kinematics.player import ControllerLimits
+from tocatl_kinematics.walk_player import ScriptCommands, WalkStreamer, motor_speed_cap, parse_script
 
 STANDING = EnvelopeOffsets(hip_yaw=(-0.3, 0.3), hip_pitch=(-0.05, 7.02), knee=(-1.7, 2.0))
 ALL = [m for leg in range(1, 7) for m in motor_ids(leg)]
@@ -240,3 +241,11 @@ def test_per_joint_gains_default_to_kp_kd_and_are_checked_against_the_profile():
         check_gains_against(joint_gains(parser.parse_args(['--kp', '30', '--kd', '2', '--kp-hip', '40'])), limits, [12, 13])
     # Yaw over the profile is fine when no yaw motor is actuated (Level 3).
     check_gains_against(joint_gains(parser.parse_args(['--kp', '30', '--kd', '2', '--kp-yaw', '99'])), limits, [12, 13])
+
+
+def test_planner_speed_cap_follows_the_controller_and_never_exceeds_it():
+    standing = ControllerLimits(max_speed=6.5)
+    assert motor_speed_cap(None, standing) == 6.5            # default: what the controller enforces
+    assert motor_speed_cap(5.0, standing) == 5.0             # a lower planner limit is allowed
+    assert motor_speed_cap(9.0, standing) == 6.5             # never above the controller
+    assert motor_speed_cap(None, ControllerLimits()) == 5.0  # unknown: the old 5 rad/s

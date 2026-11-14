@@ -57,6 +57,7 @@ class ControllerLimits:
     max_kd: float = 2.0
     torque_limit: float = 1.5
     offsets: EnvelopeOffsets = EnvelopeOffsets()
+    max_speed: float = None   # max_motor_velocity_rad_s (rad/s); None when not read
 
 
 def actuated_legs_from_ids(motor_ids_):
@@ -302,16 +303,18 @@ def parse_legs(text):
 
 CONTROLLER_PARAMETERS = ('actuation_motor_ids', 'max_position_step_rad', 'max_motor_kp', 'max_motor_kd',
                          'motion_torque_limit_nm', 'hip_yaw_home_offset_rad', 'hip_pitch_home_offset_rad',
-                         'knee_home_offset_rad')
+                         'knee_home_offset_rad', 'max_motor_velocity_rad_s')
 
 
 def limits_from_values(values):
-    """ControllerLimits from parameter values in CONTROLLER_PARAMETERS order."""
-    ids, step, kp, kd, torque, yaw, hip, knee = values
+    """ControllerLimits from parameter values in CONTROLLER_PARAMETERS order (the trailing
+    max_motor_velocity_rad_s may be omitted)."""
+    ids, step, kp, kd, torque, yaw, hip, knee = values[:8]
+    speed = values[8] if len(values) > 8 else None
     defaults = EnvelopeOffsets()
     pair = lambda v, default: tuple(v) if len(v) == 2 else default  # unset parameters read as [0.0]
     return ControllerLimits(actuation_ids=tuple(ids), max_step=step, max_kp=kp, max_kd=kd,
-                            torque_limit=torque or None,
+                            torque_limit=torque or None, max_speed=speed or None,
                             offsets=EnvelopeOffsets(hip_pitch=pair(hip, defaults.hip_pitch),
                                                     knee=pair(knee, defaults.knee), hip_yaw=pair(yaw, defaults.hip_yaw)))
 
@@ -330,7 +333,7 @@ def query_controller(node, rclpy, timeout=3.0):
     v = result.values
     return limits_from_values([v[0].integer_array_value, v[1].double_value, v[2].double_value, v[3].double_value,
                                v[4].double_value, v[5].double_array_value, v[6].double_array_value,
-                               v[7].double_array_value])
+                               v[7].double_array_value, v[8].double_value])
 
 
 def lead_for_step(max_step):

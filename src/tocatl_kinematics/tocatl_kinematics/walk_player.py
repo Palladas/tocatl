@@ -383,8 +383,9 @@ def build_parser():
     parser.add_argument('--script', help='seconds:vx,vy,wz;... (default: follow /cmd_vel until stopped)')
     parser.add_argument('--mass-kg', type=float, default=16.0)
     add_gain_arguments(parser, 80.0, 4.0)
-    parser.add_argument('--max-motor-speed-rad-s', type=float, default=5.0,
-                        help="the controller's max_motor_velocity_rad_s (report/check only)")
+    parser.add_argument('--max-motor-speed-rad-s', type=float, default=None,
+                        help="motor speed limit for the planner checks (default: the running controller's "
+                             "max_motor_velocity_rad_s; never above it)")
     parser.add_argument('--geometry', default='config/robot-geometry.json')
     parser.add_argument('--joint-map', default='config/joint-map.json')
     parser.add_argument('--dry-run', action='store_true')
@@ -392,6 +393,15 @@ def build_parser():
                         help='walk despite planner violations (printed as warnings); the controller '
                              'still enforces its own envelope, step, speed and torque limits')
     return parser
+
+
+def motor_speed_cap(requested, limits: ControllerLimits, fallback=5.0):
+    """Planner motor speed limit: the controller's max_motor_velocity_rad_s, or a lower
+    --max-motor-speed-rad-s; never above what the controller enforces."""
+    controller = limits.max_speed if limits.max_speed else None
+    if requested is None:
+        return controller or fallback
+    return min(requested, controller) if controller else requested
 
 
 def offline_report(geometry, joint_map, params, mass, limits: ControllerLimits, max_speed):
@@ -468,12 +478,13 @@ def main(argv=None):
         if legs != list(LEG_IDS) or len(yaw_ids) != 6:
             raise ValueError(f'Walking needs all 18 motors actuated; the controller actuates legs {legs}, yaws {yaw_ids}')
         check_gains_against(gains, limits, limits.actuation_ids)
+        max_speed = motor_speed_cap(args.max_motor_speed_rad_s, limits)
         state = _state_dict(latest['msg'])
         missing = undeclared_yaw_legs(state, yaw_ids)
         if missing:
             raise ValueError(f'Declare yaw references first (legs radial): legs {missing} have none this session')
         session_map, _, raw_start = session_inputs(state, legs, joint_map, yaw_ids)
-        report = offline_report(geometry, joint_map, params, args.mass_kg, limits, args.max_motor_speed_rad_s)
+        report = offline_report(geometry, joint_map, params, args.mass_kg, limits, max_speed)
         stopper = {}
         commands = (ScriptCommands(script, lambda: stopper['s'].request_stop()) if script else cmd_vel)
         streamer = stopper['s'] = WalkStreamer(geometry, session_map, params, raw_start, commands,
@@ -488,7 +499,7 @@ def main(argv=None):
                 problems = streamer.height_problems(trial.body_height_m)
                 if not problems:
                     problems = offline_report(geometry, joint_map, trial, args.mass_kg, limits,
-                                              args.max_motor_speed_rad_s)['violations']
+                                              max_speed)['violations']
                 if problems:
                     rejected[trial.body_height_m] = problems[:2]
                 else:
@@ -498,7 +509,7 @@ def main(argv=None):
         gaits_ok, gaits_rejected = [], {}
         for gait in sorted(set(GAITS) - {params.gait}):
             problems = offline_report(geometry, joint_map, replace(params, gait=gait), args.mass_kg, limits,
-                                      args.max_motor_speed_rad_s)['violations']
+                                      max_speed)['violations']
             if problems:
                 gaits_rejected[gait] = problems[:2]
             else:
@@ -508,7 +519,8 @@ def main(argv=None):
         report['yaw_not_radial'] = streamer.yaw_problems()
         report['gains'] = {j: dict(kp=gains[i][0], kd=gains[i][1]) for i, j in enumerate(('yaw', 'hip', 'knee'), 1)}
         report['controller_limits'] = dict(max_step=limits.max_step, max_kp=limits.max_kp, max_kd=limits.max_kd,
-                                           torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)
+                                           torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw,
+                                           max_speed=limits.max_speed, planner_max_speed=max_speed)
         print(json.dumps(report, indent=1, default=float), flush=True)
         problems = report['violations'] + report['blend']['problems'] + report['yaw_not_radial']
         if problems and not args.override:

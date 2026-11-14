@@ -48,14 +48,18 @@ GAITS = {
 
 @dataclass(frozen=True)
 class WalkParams:
-    gait: str = 'ripple'
+    # Defaults (2026-11-13, Pranav: faster, more yaw travel accepted): a 0.2 m/s tripod. Checked
+    # offline at 16 kg in every direction: peak ~10 Nm, hip-pitch motor ~6.0 rad/s (needs the
+    # 6.5 rad/s max_motor_velocity_rad_s in motion-standing.yaml), yaw ~0.43 rad. Tetrapod and
+    # ripple need a longer period_s and lower speeds.
+    gait: str = 'tripod'
     foot_radius_m: float = 0.25     # foot distance from each yaw axis (stand uses 0.25)
     body_height_m: float = 0.15     # feet this far below the mounting plane (stand height)
-    step_height_m: float = 0.1   # swing lift; 0.04 dragged the feet (2026-11-07, tripod)
-    period_s: float = 3.0           # one full gait cycle
-    max_stride_m: float = 1      # largest foot travel during one stance
-    max_vx_m_s: float = 0.3
-    max_vy_m_s: float = 0.1
+    step_height_m: float = 0.08     # swing lift; 0.04 dragged the feet (2026-11-07, tripod)
+    period_s: float = 1.5           # one full gait cycle
+    max_stride_m: float = 0.2       # largest foot travel during one stance
+    max_vx_m_s: float = 0.2         # (vx, vy) is clamped to the ellipse these define
+    max_vy_m_s: float = 0.2
     max_wz_rad_s: float = 0.2
     # Command ramp. 0.05 / 0.2 took 1-2 s to change direction (2026-11-07, Pranav: too slow);
     # these reach full speed in ~0.1-0.25 s.
@@ -71,13 +75,13 @@ class WalkParams:
         if not 0.05 <= self.body_height_m <= 0.5:
             problems.append('body_height_m must be in [0.05, 0.5]')
         if not 0.005 <= self.step_height_m <= 0.2:
-            problems.append('step_height_m must be in [0.005, 0.12]')
+            problems.append('step_height_m must be in [0.005, 0.2]')
         if not 0.5 <= self.period_s <= 20:
             problems.append('period_s must be in [0.5, 20]')
         if not 0 < self.max_stride_m <= 1:
             problems.append('max_stride_m must be in (0, 1]')
         if not all(0 <= v <= 1 for v in (self.max_vx_m_s, self.max_vy_m_s)) or not 0 <= self.max_wz_rad_s <= 1.0:
-            problems.append('speed limits must be within 0.5 m/s and 1 rad/s')
+            problems.append('speed limits must be within 1 m/s and 1 rad/s')
         if not (0 < self.accel_m_s2 <= 1.0 and 0 < self.alpha_rad_s2 <= 2.0):
             problems.append('accelerations must be positive and modest')
         if problems:
@@ -134,7 +138,13 @@ class WalkGenerator:
         """Limit a requested twist to the speed limits and the stride the stance allows."""
         p = self.params
         vx, vy, wz = (float(c) for c in command)
-        vx, vy = (max(-p.max_vx_m_s, min(p.max_vx_m_s, vx)), max(-p.max_vy_m_s, min(p.max_vy_m_s, vy)))
+        # Elliptical, not per-axis: a diagonal command must not exceed what feasibility() checks
+        # (it walks the ellipse); per-axis clamping let a corner run sqrt(2) faster.
+        vx = vx if p.max_vx_m_s > 0 else 0.0
+        vy = vy if p.max_vy_m_s > 0 else 0.0
+        norm = hypot(vx / p.max_vx_m_s if vx else 0.0, vy / p.max_vy_m_s if vy else 0.0)
+        if norm > 1.0:
+            vx, vy = vx / norm, vy / norm
         wz = max(-p.max_wz_rad_s, min(p.max_wz_rad_s, wz))
         worst = max(hypot(*_foot_velocity((vx, vy, wz), n[:2])) for n in self.neutral.values())
         scale = min(1.0, p.max_stride_m / (worst * p.stance_s)) if worst > 0 else 1.0

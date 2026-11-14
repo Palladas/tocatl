@@ -313,6 +313,9 @@ def test_controller_limits_from_parameters():
     assert standing.offsets.hip_pitch == (-0.02, 2.6) and standing.offsets.hip_yaw == (-0.3, 0.3)
     feet_air = limits_from_values([[12, 13], 0.5, 30.0, 2.0, 1.5, [0.0], [-0.02, 1.6], [-1.7, 2.0]])
     assert feet_air.offsets.hip_yaw == EnvelopeOffsets().hip_yaw  # unset parameter reads as [0.0]
+    assert feet_air.max_speed is None                               # speed not read: unknown
+    walking = limits_from_values([[11, 12, 13], 0.5, 100.0, 5.0, 12.0, [-1.0, 1.0], [-0.05, 7.02], [-1.7, 2.0], 6.5])
+    assert walking.max_speed == 6.5 and walking.offsets.hip_yaw == (-1.0, 1.0)
 
 
 def stand_motion(**kw):

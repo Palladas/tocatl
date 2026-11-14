@@ -351,14 +351,28 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
   the immediate hard stop. Not yet tested on the robot: try it first with the robot supported.
 - **Stopping:** Ctrl-C once settles the feet and lowers the body, then disarms. Ctrl-C twice
   disarms at once, which **drops** the robot.
-- **Step height:** 0.08 m by default (`--step-height-m`; 0.04 dragged the feet). Tripod is
-  feasible up to 0.12 m and tetrapod up to 0.10 m.
-  - Ripple swings each foot in only 15% of the cycle, so at 0.08 m it needs
-    `--period-s 5` (or `--step-height-m 0.04`) to stay under the 5 rad/s hip motor speed.
+- **Defaults (since 2026-11-13): a 0.2 m/s tripod.** `--gait tripod --period-s 1.5
+  --step-height-m 0.08 --max-stride-m 0.2`, speeds `--max-vx-m-s 0.2 --max-vy-m-s 0.2
+  --max-wz-rad-s 0.2`.
+  - (vx, vy) is clamped to the **ellipse** of those limits, so a diagonal stick gets about
+    0.14 + 0.14 m/s, not 0.2 + 0.2. That is exactly what the dry run checks. It is also clamped
+    to the stride.
+  - It needs the controller's **6.5 rad/s** speed cap from `motion-standing.yaml`: the hip-pitch
+    motor peaks at about 6.0 rad/s through the 2.7:1 gearbox. The walker reads the cap from the
+    controller (`controller_limits.max_speed` in the dry run). `--max-motor-speed-rad-s` can only
+    lower it.
+  - Simulated at 16 kg: peak 10.0 Nm (the walker refuses above 10.8), yaw about ±0.43 rad.
+  - **First runs:** start slower, e.g. `--max-vx-m-s 0.1 --max-vy-m-s 0.1`, and step up. Watch
+    the knee temperatures: 10 Nm peaks are 2.5× the 4 Nm continuous rating.
+- **Step height:** 0.08 m by default (`--step-height-m`; 0.04 dragged the feet). A higher step
+  needs more hip motor speed: 0.1 m at 1.5 s goes over 6.5 rad/s.
+- Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest).
+  - At the 1.5 s default, **only tripod passes**: tetrapod and ripple would need 10 to 20 rad/s
+    on the hip motor.
+  - To use them, slow them down, e.g. `--gait tetrapod --period-s 3 --max-vx-m-s 0.05
+    --max-vy-m-s 0.05`, or `--gait ripple --period-s 5` with the same speeds.
   - The dry run lists which gaits passed (`gaits.allowed`). X / `walk/gait` only switches to
     those, and only at the start body height. The D-pad only changes height in the start gait.
-- Gaits: `ripple` (most stable), `tetrapod`, `tripod` (fastest). Speeds are clamped to
-  `--max-vx-m-s`, `--max-vy-m-s` (0.05) and `--max-wz-rad-s` (0.2), and to the stride.
 
 **Gains** (motor kp/kd; there is no integral term). The default is `--kp 80 --kd 4` on every motor.
 Set each joint on its own with:
@@ -370,20 +384,23 @@ ros2 run tocatl_kinematics tocatl_walk --gait tripod --kp 80 --kd 4 --kp-hip 40 
   `-p max_motor_kp:=150` to the controller.
 - The dry run prints the gains it will use (`gains`).
 
-**Faster: longer steps and a shorter cycle (tuning).** Speed = stride ÷ stance time. Longer
-strides need more hip-yaw swing than the ±0.3 rad envelope in `motion-standing.yaml`, so widen it
-for the run on the controller. The walker reads the controller's envelope and checks against it.
+**Tuning speed.** Speed = stride ÷ stance time.
+- `motion-standing.yaml` allows ±1.0 rad of hip yaw, which is more than any row below needs.
+- The limits that matter are the **hip-pitch motor speed**, which the 2.7:1 gearbox multiplies,
+  and the **knee torque** at long strides.
+- A shorter cycle is the cheaper way to go faster: shorter strides, so less torque.
+- The walker reads the controller's envelope and speed cap and checks against them.
 ```bash
-~/tocatl/scripts/cmds/level4-walk.sh -p "hip_yaw_home_offset_rad:=[-0.5,0.5]"      # T1 (re-home, declare yaw)
-ros2 run tocatl_kinematics tocatl_walk --gait tripod --period-s 2.0 --max-stride-m 0.12 \
-  --max-vx-m-s 0.12 --max-vy-m-s 0.12 --dry-run                                     # T2: check ok
-~/tocatl/scripts/cmds/teleop.sh -p max_vx_m_s:=0.12 -p max_vy_m_s:=0.12            # T4: let the sticks ask for it
+ros2 run tocatl_kinematics tocatl_walk --gait tripod --max-vx-m-s 0.1 --max-vy-m-s 0.1 --dry-run   # T2: check ok
+~/tocatl/scripts/cmds/teleop.sh -p max_vx_m_s:=0.1 -p max_vy_m_s:=0.1              # T4: sticks ask for at most this
 ```
 
 Simulated tripod, 16 kg, at the maximum command in every direction plus turning:
 
 | Cycle | Stride | Top speed | Yaw needed | Peak hip motor speed | Peak torque |
 |---|---|---|---|---|---|
+| **1.5 s** | **0.165 m** | **20 cm/s (default)** | **±0.43 rad** | **6.0 rad/s (needs the 6.5 cap)** | **10.0 Nm** |
+| 1.75 s | 0.135 m | 14 cm/s | ±0.42 rad | 4.9 rad/s | 9.0 Nm |
 | 3 s | 0.08 m | 4.8 cm/s | ±0.32 rad | 2.5 rad/s | 6.1 Nm |
 | 3 s | 0.12 m | 7.3 cm/s | ±0.47 rad | 2.9 rad/s | 9.5 Nm |
 | 2 s | 0.10 m | 9.1 cm/s | ±0.37 rad | 4.0 rad/s | 7.0 Nm |
