@@ -373,7 +373,8 @@ def test_tripod_legs_actually_overlap_and_share_polling(group, tmp_path, quick_c
     assert set(worker.readiness.snapshot()[0]) == {mid for leg in group for mid in hip_knee_ids(leg)}
     assert hw.priority_motor is None
     assert all(s.mode == 0 for s in hw.samples.values())
-    assert all(value == 1.5 for mid, action, value in hw.events if action == 'limit' and value != 12)
+    # Default stage limits: 0.8 Nm on the hip stage, 1.5 Nm on the knee stage.
+    assert {value for mid, action, value in hw.events if action == 'limit' and value != 12} == {0.8, 1.5}
 
 
 def test_parallel_failure_cancels_partner_and_never_starts_next_group(tmp_path, quick_contact, monkeypatch):
@@ -581,6 +582,19 @@ def test_hip_stage_uses_the_lower_hip_torque_and_knee_stage_restores_1_5(tmp_pat
     # Hip stage on both pair motors, knee stage back to 1.5, then the originals (12) restored.
     assert limits[:4] == [(12, 0.8), (13, 0.8), (12, 1.5), (13, 1.5)]
     assert limits[4:] == [(12, 12.0), (13, 12.0)]
+    worker.cancel()
+
+
+def test_default_hip_stage_uses_0_8_nm_for_the_gearbox(tmp_path, quick_contact):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    assert (worker.hip_torque_limit, worker.hip_contact_effort) == (0.8, 0.5)
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    limits = [(mid, value) for mid, kind, value in hw.events if kind == 'limit']
+    assert limits[:4] == [(12, 0.8), (13, 0.8), (12, 1.5), (13, 1.5)]
     worker.cancel()
 
 

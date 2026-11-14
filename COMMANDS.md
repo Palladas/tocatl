@@ -224,13 +224,18 @@ ros2 service call /motors/tripod_246/home std_srvs/srv/Trigger
 - Only legs in the controller's `homing.legs` are homed. A tripod service homes the part of its
   tripod that is selected.
 
-**Hip homing torque** (the gearbox multiplies it 2.7× at the joint). The defaults are 1.5 Nm
-drive limit and 1.0 Nm contact threshold, motor side. To lower them for one run, add to the
-controller command:
+**Hip homing torque** (the gearbox multiplies it 2.7× at the joint). The defaults are 0.8 Nm
+drive limit and 0.5 Nm contact threshold, motor side (~2.2 Nm at the hip joint; was 1.5 / 1.0
+until 2026-11-13). The knee stage stays 1.5 / 1.0. To change them for one run, add to the
+controller command, e.g. the old values:
 ```bash
--p homing.hip_torque_limit_nm:=0.8 -p homing.hip_contact_effort_nm:=0.5
+-p homing.hip_torque_limit_nm:=1.5 -p homing.hip_contact_effort_nm:=1.0
 ```
 - Both must satisfy contact < limit ≤ 1.5.
+- **First run at 0.8 / 0.5:** the stop references were learned at 1.5 / 1.0, and a softer press
+  can stop slightly short. Home one leg with `-p homing.enforce_hip_window:=false`, and check
+  that each hip reports `reference_within_window: true`, `contact_effort_nm` ≥ 0.5, and
+  `peak_seek_effort_nm` well below 0.5 (command below). Re-learn references if a hip is outside.
 - Choose from data: after any homing run, read each hip's free-travel effort. The contact
   threshold should sit well above it.
   ```bash

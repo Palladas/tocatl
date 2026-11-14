@@ -1179,8 +1179,8 @@ def create_homing(node, hardware):
             node.declare_parameter('homing.output_path', 'hip-knee-homing.json').value,
             verify_repeatability=verify, profiles=profiles, legs=legs,
             timeout_s=node.declare_parameter('homing.timeout_s', 600.0 if verify else 60.0).value,
-            hip_torque_limit=float(node.declare_parameter('homing.hip_torque_limit_nm', 1.5).value),
-            hip_contact_effort=float(node.declare_parameter('homing.hip_contact_effort_nm', 1.0).value),
+            hip_torque_limit=float(node.declare_parameter('homing.hip_torque_limit_nm', 0.8).value),
+            hip_contact_effort=float(node.declare_parameter('homing.hip_contact_effort_nm', 0.5).value),
             # false = hips report a stop outside the window instead of refusing it (for
             # re-learning references); the result still records reference_within_window.
             enforce_hip_window=node.declare_parameter('homing.enforce_hip_window', True).value)
@@ -1451,7 +1451,7 @@ TRIPODS = ((1, 3, 5), (2, 4, 6))
 class HipKneeHoming:
     """Home hip then knee; repeated contacts are an optional commissioning mode."""
     def __init__(self, hardware, output, *, verify_repeatability=False, timeout_s=None,
-                 profiles=None, legs=(1,), hip_torque_limit=1.5, hip_contact_effort=1.0,
+                 profiles=None, legs=(1,), hip_torque_limit=0.8, hip_contact_effort=0.5,
                  enforce_hip_window=True):
         if timeout_s is None:
             timeout_s = 600.0 if verify_repeatability else 60.0
@@ -1654,8 +1654,9 @@ class HipKneeHoming:
                 initial = self.hardware.snapshot()[0][mid].position
                 if time.monotonic() >= deadline:
                     raise ValueError('Homing overall timeout')
-                # Hip stage: lower drive torque and contact threshold (2.7:1 gearbox, so the
-                # motor-side 1.5 Nm pushed the hip stop ~3.6 Nm at the joint); knee: 1.5 / 1.0.
+                # Hip stage: lower drive torque and contact threshold, default 0.8 / 0.5 (2.7:1
+                # gearbox, so the motor-side 1.5 Nm pushed the hip stop ~3.6 Nm at the joint);
+                # knee: 1.5 / 1.0.
                 # Both pair motors carry the stage's limit (the stage verifies both).
                 hip_stage = mid == hip_id
                 limit = self.hip_torque_limit if hip_stage else 1.5
