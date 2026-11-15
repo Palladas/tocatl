@@ -311,7 +311,7 @@ ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,
 Needs every leg homed and the yaws declared:
 ```bash
 ros2 run tocatl_kinematics tocatl_play --legs 1,2,3,4,5,6 --actuated-legs 1,2,3,4,5,6 --kind stand \
-  --kp 80 --kd 4 --r-m 0.25 --rest-height-m 0.10 --stand-height-m 0.15 --mass-kg 16 --max-speed-rad-s 0.5
+  --kp 25 --kd 1 --r-m 0.25 --rest-height-m 0.10 --stand-height-m 0.15 --mass-kg 16 --max-speed-rad-s 0.5
 ```
 
 | Setting | What it changes |
@@ -384,7 +384,7 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
   A leg that sags or a walk that slows needs more kp on that joint.
 Set each joint on its own with:
 ```bash
-ros2 run tocatl_kinematics tocatl_walk --gait tripod --kp 80 --kd 4 --kp-hip 40 --kd-hip 2 --kp-knee 60 --dry-run
+ros2 run tocatl_kinematics tocatl_walk --gait tripod --kp 25 --kd 1 --kp-hip 20 --kd-hip 0.5 --kp-knee 30 --dry-run
 ```
 - The 2.7:1 gearbox makes a hip kp about 7.3× stiffer at the joint than the same kp on a knee.
 - Gains above the profile (Level 4: kp 100, kd 5) are refused. To go higher, add e.g.
