@@ -382,7 +382,10 @@ def build_parser():
                             default=getattr(defaults, field.name))
     parser.add_argument('--script', help='seconds:vx,vy,wz;... (default: follow /cmd_vel until stopped)')
     parser.add_argument('--mass-kg', type=float, default=16.0)
-    add_gain_arguments(parser, 80.0, 4.0)
+    # 25 / 1 since 2026-11-15 (Pranav: legs shook a lot at 50-80 / 4). kp 25 is about the floor
+    # for walking: lag = load / kp, and at 0.1 m/s the hip (~5 Nm) and knee (~4.5 Nm) peaks then
+    # lag ~0.2 rad, where playback starts slowing (half the 0.4 rad lead). Faster walks lag more.
+    add_gain_arguments(parser, 25.0, 1.0)
     parser.add_argument('--max-motor-speed-rad-s', type=float, default=None,
                         help="motor speed limit for the planner checks (default: the running controller's "
                              "max_motor_velocity_rad_s; never above it)")

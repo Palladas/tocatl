@@ -374,7 +374,14 @@ ros2 topic pub --once /walk/height std_msgs/msg/Int8 "{data: 1}"                
   - The dry run lists which gaits passed (`gaits.allowed`). X / `walk/gait` only switches to
     those, and only at the start body height. The D-pad only changes height in the start gait.
 
-**Gains** (motor kp/kd; there is no integral term). The default is `--kp 80 --kd 4` on every motor.
+**Gains** (motor kp/kd; there is no integral term). The default is `--kp 25 --kd 1` on every motor
+(lowered from 80 / 4 on 2026-11-15: the legs shook).
+- Lower kp sags more under load: lag ≈ motor torque ÷ kp. The walk slows down when a motor lags
+  more than 0.2 rad and stops with a stall at about 0.38 rad.
+- At kp 25: walking at 0.1 m/s lags about 0.2 rad (hip and knee peak ~5 Nm). At 0.2 m/s the
+  knee (~7 Nm) lags ~0.28 rad, so the walk runs slower than asked.
+- Still shaking: lower kd first (`--kd 0.5`), then kp on the joint that shakes (`--kp-hip 20`).
+  A leg that sags or a walk that slows needs more kp on that joint.
 Set each joint on its own with:
 ```bash
 ros2 run tocatl_kinematics tocatl_walk --gait tripod --kp 80 --kd 4 --kp-hip 40 --kd-hip 2 --kp-knee 60 --dry-run
