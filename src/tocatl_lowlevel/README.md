@@ -47,10 +47,14 @@ holding. Normal homing needs one loaded contact per joint, stable within 0.003
 rad for 0.6 s, with a 0.2 rad/s reference and 60-second motion budget **per leg**.
 
 The controller provides `/motors/leg_1/home` through `/motors/leg_6/home` for
-individual legs, and `/motors/home` for the configured list in order. Only one
-homing worker runs at a time. The batch stops at the first failure; completed
-legs remain ready. A repeated request while running is rejected. Disable/cancel
-stops the active pair. Homing and normal actuation remain exclusive.
+individual legs, and `/motors/home` for opposite-leg groups: (1,4), then (2,5),
+then (3,6). Both legs in each group home concurrently; each leg still homes hip
+before knee. A partial selection pairs only selected opposites and otherwise
+runs a leg alone. Only one batch may run at a time. Any active-leg failure
+cancels its partner and prevents later groups from starting, including while a
+failed drive is retrying stop. Earlier completed groups remain ready. Cancel
+stops both active legs. Both legs retain telemetry priority through confirmed
+stop; shared result writes are serialized. Homing and normal actuation remain exclusive.
 
 Each leg's `homing.leg_N.hip_stop_rad`, `knee_stop_rad`, `hip_direction`, and
 `knee_direction` are independent. Directions accept +1 or -1. The all-leg YAML
@@ -65,7 +69,8 @@ before starting; individual configured legs can be homed independently.
 
 `homing-leg1-pair.yaml` remains available. Its existing `leg1_pair` method is an
 alias for the same implementation with leg 1 selected, preserving existing test
-commands. Both profiles keep `allow_homing=false` until explicitly enabled.
+commands. The all-leg server enables homing services by default; motion still
+requires an explicit service request.
 
 For commissioning only, `homing.verify_repeatability:=true` selects three
 independent contacts per joint, 5-degree backoffs, <=0.01 rad contact spread, a
@@ -88,9 +93,13 @@ stop. Moving feedback under load does not count as a stable contact.
 
 Active-joint native MIT gains remain kp=1.75/kd=2. The supporting hip during knee
 homing retains kp=150/kd=3 and a 0.01 rad drift guard. Both drives' volatile runtime
-torque limits are set to 2.625 Nm with readback before enable, and their original
+torque limits are set to 1.5 Nm with readback before enable, and their original
 limits are restored only after disabled feedback is confirmed. No device zero
-is written. The 3.5 Nm measured-effort abort, 0.5 rad/s encoder speed guard,
+is written. Stable contact requires 1.0 Nm inward effort. After the final contact,
+the worker removes spring error over 1.5 seconds with damping retained, then
+fades both motors' impedance to zero over another 1.5 seconds before disable.
+Contact positions are saved from the loaded contact, before unloading. Faults
+and cancellation still request immediate stop. The 3.5 Nm measured-effort abort, 0.5 rad/s encoder speed guard,
 0.25 s feedback/fault freshness and 45 C thermal guard remain unchanged. Startup
 has no fixed sleep: it verifies the torque cap and waits only for fresh state,
 fault and enable acknowledgements. Slow reference loading and commissioning
@@ -122,16 +131,20 @@ Historical powered test results and CAN findings:
 - [CAN investigation](../../docs/can-debug-2026-10-25.md)
 
 
-After filling the required per-leg references, start the all-leg interface:
+Start the lowlevel hardware server (with the hardware dependencies in the active venv):
 
 ```bash
 cd ~/tocatl
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-.venv/bin/python -c 'from tocatl_lowlevel.motor_controller import main; main()' \
-  --ros-args --params-file src/tocatl_bringup/config/homing-hip-knee.yaml \
-  -p allow_homing:=true
+source .venv/bin/activate
+ros2 launch tocatl_bringup lowlevel.launch.py
 ```
+
+The server exposes homing by default and waits for a service request before moving.
+It selects the twelve hip/knee motors and uses the lighter contact/gradual release
+profile. `allow_homing:=false` disables the homing services. Normal actuation
+remains disabled. Stop any previous controller before launching this one.
 
 From another sourced terminal, request one leg or the configured list:
 

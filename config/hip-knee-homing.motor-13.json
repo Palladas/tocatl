@@ -5,18 +5,19 @@
       "motor_id": 13,
       "bus": "can1",
       "method": "active_pd_endstop_search",
-      "initial_position_rad": 0.8466849774929432,
+      "initial_position_rad": 1.6546501869230177,
       "initial_phase": "SEEK_STOP",
-      "home_position_rad": 0.7379644464789816,
+      "home_position_rad": 1.579499504081788,
       "previous_reference_rad": 0.7394903486686513,
-      "reference_delta_rad": -0.0015259021896696368,
-      "reference_within_window": true,
+      "reference_delta_rad": 0.8400091554131368,
+      "reference_within_window": false,
       "contact_positions_rad": [
-        0.7379644464789816
+        1.579499504081788
       ],
       "spread_rad": 0.0,
       "independent_reapproaches": false,
       "contact_verified": true,
+      "release_completed": true,
       "device_zero_written": false,
       "config": {
         "motor_id": 13,
@@ -26,12 +27,12 @@
         "kp": 1.75,
         "kd": 2.0,
         "direction": -1,
-        "lead": 1.5,
+        "lead": 0.8571428571428571,
         "reference_speed": 0.2,
-        "command_torque_limit": 2.625,
+        "command_torque_limit": 1.5,
         "overspeed": 0.5,
         "effort_limit": 3.5,
-        "minimum_contact_effort": 2.3,
+        "minimum_contact_effort": 1.0,
         "stop_window": 0.03,
         "settle_motion": 0.003,
         "dwell": 0.6,
@@ -42,21 +43,22 @@
         "repeatability": 0.01,
         "phase_timeout": 60.0,
         "initial_seek_timeout": 60.0,
-        "contacts_required": 1
+        "contacts_required": 1,
+        "release_duration": 3.0
       },
-      "completed_unix_s": 1792983354.4054065,
+      "completed_unix_s": 1793054712.909183,
       "hip_hold": {
         "motor_id": 12,
-        "position_rad": -0.8310444800488295,
+        "position_rad": -0.023079270618753256,
         "kp": 150.0,
         "kd": 3.0,
         "effort_limit_nm": 3.5,
         "deviation_limit_rad": 0.01
       },
       "control": "native_mit_impedance_runtime_torque_limit",
-      "command_torque_limit_nm": 2.625,
+      "command_torque_limit_nm": 1.5,
       "torque_limit_register": "0x700b",
-      "hip_reference_rad": -0.8310444800488295
+      "hip_reference_rad": -0.023079270618753256
     }
   }
 }

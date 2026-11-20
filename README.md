@@ -9,7 +9,7 @@ extracted from `~/romela-tocatl`; the source project is left intact.
 | `tocatl_interfaces` | Shared robot, motor, and foot state ROS messages |
 | `tocatl_bringup` | Launch files and runtime parameter YAML |
 | `tocatl_diagnostics` | Inventory and optional read-only CyberGear CAN telemetry |
-| `tocatl_kinematics` | Recovered pure Python leg FK/IK and geometry reference |
+| `tocatl_kinematics` | Offline leg/body IK, tripod gait planning and measurement fitting ([docs/kinematics.md](docs/kinematics.md)); legacy geometry reference |
 
 ## Build and run
 

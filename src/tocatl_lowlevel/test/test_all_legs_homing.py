@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from tocatl_lowlevel.hardware import Sample
-from tocatl_lowlevel.homing import (HipKneeHoming, LegHomingConfig, LegReadiness,
+from tocatl_lowlevel.homing import (TRIPODS, HipKneeHoming, LegHomingConfig, LegReadiness,
                                    KneeSeekConfig, KneeSeekSequence, ActiveKneeHoming,
                                    PDCommand)
 from tocatl_lowlevel.motor_map import MOTORS, HIP_KNEE_IDS, hip_knee_ids
@@ -24,6 +24,8 @@ def profiles():
 class FakeHardware:
     def __init__(self):
         self.stale_after = 1.5
+        self.transport = 'v1'
+        self.wiring = None
         self.tx_lock = threading.RLock()
         self.priority_motor = None
         self.events = []
@@ -120,12 +122,12 @@ def test_each_leg_routes_only_its_pair_and_saves_correct_bus(leg, tmp_path, quic
     assert all(hw.samples[mid].mode == 0 and hw.samples[mid].runtime_torque_limit == 12 for mid in pair)
     record = json.loads((tmp_path/'homes.json').read_text())['legs'][str(leg)]
     assert record['motor_ids'] == list(pair)
-    assert {m['bus'] for m in record['motors']} == {'can1' if leg in (1,5,6) else 'can0'}
+    assert {m['bus'] for m in record['motors']} == {f'can{(leg - 1) // 2}'}
     assert record['motors'][0]['config']['direction'] == profiles()[leg].hip_direction
     assert record['motors'][1]['config']['direction'] == profiles()[leg].knee_direction
 
 
-def test_all_six_legs_home_sequentially_and_accumulate_readiness(tmp_path, quick_contact):
+def test_all_six_legs_home_in_tripods_and_accumulate_readiness(tmp_path, quick_contact):
     hw = FakeHardware()
     worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=range(1,7))
     hw.owner = worker
@@ -134,22 +136,24 @@ def test_all_six_legs_home_sequentially_and_accumulate_readiness(tmp_path, quick
     assert not worker.thread.is_alive() and not worker.faulted, worker.reason
     assert set(worker.readiness.snapshot()[0]) == set(HIP_KNEE_IDS)
     enables = [mid // 10 for mid, action, value in hw.events if action == 'enable']
-    assert enables == sorted(enables) and set(enables) == set(range(1,7))
+    assert set(enables) == set(range(1,7))
+    group_index = {leg: index for index, group in enumerate(TRIPODS) for leg in group}
+    assert [group_index[leg] for leg in enables] == sorted(group_index[leg] for leg in enables)
     assert 51 not in {mid for mid, _, _ in hw.events}
     assert set(json.loads((tmp_path/'homes.json').read_text())['legs']) == set('123456')
 
 
 def test_failed_leg_does_not_erase_completed_legs_or_start_later_legs(tmp_path, quick_contact):
     hw = FakeHardware()
-    hw.fail_read = 32
-    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3,4))
+    hw.fail_read = 42
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3,4,5))
     hw.owner = worker
     worker.start()
     worker.thread.join(5)
     assert not worker.thread.is_alive() and worker.faulted
-    assert set(worker.readiness.snapshot()[0]) == {12,13,22,23}
-    assert all(mid < 40 for mid, _, _ in hw.events)
-    assert 'Leg 3' in worker.reason
+    assert set(worker.readiness.snapshot()[0]) == {12,13,32,33,52,53}   # tripod 1/3/5 done first
+    assert not any(mid in (62,63) for mid, _, _ in hw.events)
+    assert 'Leg 4' in worker.reason
 
 
 def test_cancel_keeps_completed_leg_ready_and_stops_before_next_enable(tmp_path, quick_contact):
@@ -160,8 +164,8 @@ def test_cancel_keeps_completed_leg_ready_and_stops_before_next_enable(tmp_path,
     worker.start()
     worker.thread.join(5)
     assert not worker.thread.is_alive() and worker.faulted
-    assert set(worker.readiness.snapshot()[0]) == {12,13}
-    assert not any(mid >= 22 and action == 'enable' for mid, action, _ in hw.events)
+    assert set(worker.readiness.snapshot()[0]) == {12,13,32,33}     # tripod 1/3 finished before leg 2
+    assert not any(mid in (22,23) and action == 'enable' for mid, action, _ in hw.events)
     assert all(s.mode == 0 for s in hw.samples.values())
 
 
@@ -214,7 +218,7 @@ def test_feedback_search_handles_each_joint_direction(leg, direction):
         if seq.done:break
     assert seq.done
     assert seq.result()['home_position_rad'] == pytest.approx(stop)
-    assert seq.result()['bus'] == ('can1' if leg in (1,5,6) else 'can0')
+    assert seq.result()['bus'] == (f'can{(leg - 1) // 2}')
 
 
 def test_all_leg_ros_profile_and_service_dispatch_without_can(monkeypatch, tmp_path, quick_contact):
@@ -240,6 +244,8 @@ def test_all_leg_ros_profile_and_service_dispatch_without_can(monkeypatch, tmp_p
         assert requested == list(HIP_KNEE_IDS)
         assert {s.srv_name.strip('/') for s in node.leg_homing_services} == {
             f'motors/leg_{leg}/home' for leg in range(1,7)}
+        assert {s.srv_name.strip('/') for s in node.tripod_homing_services} == {
+            'motors/tripod_135/home', 'motors/tripod_246/home'}
         rejected = node.leg_homing_services[1].callback(Trigger.Request(), Trigger.Response())
         assert not rejected.success and 'Leg 2: configure' in rejected.message
         assert not hw.events
@@ -263,7 +269,8 @@ def test_local_homing_fault_publishes_other_completed_legs_as_ready(tmp_path, qu
     from tocatl_interfaces.msg import RobotState
     from tocatl_lowlevel.motor_controller import MotorController
     hw = FakeHardware()
-    hw.fail_read = 32
+    # Tripod batches: legs 1 and 3 finish together, then leg 2 runs alone and fails.
+    hw.fail_read = 22
     worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,2,3))
     hw.owner = worker
     worker.start()
@@ -273,9 +280,9 @@ def test_local_homing_fault_publishes_other_completed_legs_as_ready(tmp_path, qu
     node = NS(homing=worker, motion=NS(status=lambda: (False,False,'')),
               hardware=hw, readiness=worker.readiness)
     MotorController.add_leg_status(node, state)
-    assert [l.leg_id for l in state.legs if l.ready] == [1,2]
-    assert 'Leg 3' in state.legs[2].status_reason
-    assert state.legs[0].status_reason != state.legs[2].status_reason
+    assert [l.leg_id for l in state.legs if l.ready] == [1,3]
+    assert 'Leg 2' in state.legs[1].status_reason
+    assert state.legs[0].status_reason != state.legs[1].status_reason
 
 
 def test_stale_pair_feedback_does_not_remove_other_legs(tmp_path, quick_contact):
@@ -341,3 +348,358 @@ def test_knee_stage_uses_relaxed_hip_pose_without_old_loaded_position_gate(tmp_p
     assert set(worker.readiness.snapshot()[0]) == {12,13}
     record = json.loads((tmp_path/'homes.json').read_text())['legs']['1']
     assert record['motors'][1]['hip_reference_rad'] == pytest.approx(profiles()[1].hip_stop+.08)
+
+
+@pytest.mark.parametrize('group', TRIPODS)
+def test_tripod_legs_actually_overlap_and_share_polling(group, tmp_path, quick_contact, monkeypatch):
+    barrier = threading.Barrier(3)
+    hw = FakeHardware()
+    class OverlapContact(VerifiedContact):
+        def update(self, *args):
+            if self.config.motor_id % 10 == 2 and self.calls == 1:
+                barrier.wait(timeout=2)
+                active = {mid//10 for mid,s in hw.samples.items() if s.mode == 2}
+                assert active == set(group)
+                assert set(hw.priority_motor) == {mid for leg in group for mid in hip_knee_ids(leg)}
+                barrier.wait(timeout=2)
+            return super().update(*args)
+    monkeypatch.setattr(ActiveKneeHoming, 'make_sequence',
+                        lambda self, sample, now: OverlapContact(self.config, hw))
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=group)
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert not worker.thread.is_alive() and not worker.faulted, worker.reason
+    assert set(worker.readiness.snapshot()[0]) == {mid for leg in group for mid in hip_knee_ids(leg)}
+    assert hw.priority_motor is None
+    assert all(s.mode == 0 for s in hw.samples.values())
+    # Default stage limits: 0.8 Nm on the hip stage, 1.5 Nm on the knee stage.
+    assert {value for mid, action, value in hw.events if action == 'limit' and value != 12} == {0.8, 1.5}
+
+
+def test_parallel_failure_cancels_partner_and_never_starts_next_group(tmp_path, quick_contact, monkeypatch):
+    barrier = threading.Barrier(3)
+    hw = FakeHardware()
+    class FailingContact(VerifiedContact):
+        def update(self, *args):
+            if self.calls == 1 and self.config.motor_id % 10 == 2:
+                barrier.wait(timeout=2)
+                if self.config.motor_id == 12:
+                    raise ValueError('Injected parallel contact failure')
+                time.sleep(.05)
+            return super().update(*args)
+    monkeypatch.setattr(ActiveKneeHoming, 'make_sequence',
+                        lambda self, sample, now: FailingContact(self.config, hw))
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=range(1,7))
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert not worker.thread.is_alive() and worker.faulted
+    assert 'Injected parallel contact failure' in worker.reason
+    assert not worker.readiness.snapshot()[0]
+    assert {mid//10 for mid,action,_ in hw.events if action == 'enable'} == {1,3,5}
+    assert all(s.mode == 0 and s.runtime_torque_limit == 12 for s in hw.samples.values())
+    assert hw.priority_motor is None
+
+
+def test_partial_selections_follow_the_tripods(tmp_path):
+    worker = HipKneeHoming(FakeHardware(), tmp_path/'homes.json', profiles=profiles(), legs=(5,1,2,3))
+    assert worker.groups() == [(1,3,5), (2,)]
+    assert HipKneeHoming(FakeHardware(), tmp_path/'h.json', profiles=profiles(), legs=(4,6)).groups() == [(4,6)]
+
+
+def test_stop_recovery_cancels_tripod_partners_before_ack_recovers(tmp_path, quick_contact, monkeypatch):
+    hw = FakeHardware()
+    barrier = threading.Barrier(3)
+    retrying = threading.Event()
+    release_stop = threading.Event()
+    partner_stopped = threading.Event()
+    class FaultContact(VerifiedContact):
+        def update(self, *args):
+            if self.config.motor_id % 10 == 2 and self.calls == 1:
+                barrier.wait(timeout=2)
+                if self.config.motor_id == 12:
+                    raise ValueError('Contact sensor failure')
+                retrying.wait(2)
+                # Keep the partner worker active until supervisor cancellation.
+                while not hw.owner.cancelled.is_set():
+                    time.sleep(.005)
+            return super().update(*args)
+    monkeypatch.setattr(ActiveKneeHoming, 'make_sequence',
+                        lambda self, sample, now: FaultContact(self.config, hw))
+    driver12 = next(d for d in hw.drivers if d.motor_id == 12)
+    driver32 = next(d for d in hw.drivers if d.motor_id == 32)
+    stop12, stop32 = driver12.stop, driver32.stop
+    def unavailable_stop():
+        if not release_stop.is_set():
+            retrying.set()
+            raise ValueError('Injected stop transmission failure')
+        stop12()
+    def observed_stop():
+        stop32()
+        partner_stopped.set()
+    driver12.stop, driver32.stop = unavailable_stop, observed_stop
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=range(1,7))
+    hw.owner = worker
+    worker.start()
+    try:
+        assert retrying.wait(2)
+        assert partner_stopped.wait(2)
+        assert worker.thread.is_alive()
+        assert worker.status()[1]
+        assert set(hw.priority_motor) == {12,13,32,33,52,53}
+        with pytest.raises(ValueError, match='fault recovery'):
+            worker.start()
+    finally:
+        release_stop.set()
+        worker.thread.join(5)
+    assert not worker.thread.is_alive() and worker.faulted
+    assert 'Contact sensor failure' in worker.reason
+    assert all(s.mode == 0 and s.runtime_torque_limit == 12 for s in hw.samples.values())
+    assert not worker.readiness.snapshot()[0]
+
+
+
+def test_leg_waits_briefly_for_fresh_pair_feedback_instead_of_refusing(tmp_path, quick_contact):
+    """2026-10-27 16:16: leg 2's background-polled feedback was just past stale_after when
+    its batch turn came, and the leg refused instead of waiting one sweep."""
+    hw = FakeHardware()
+    stale_reads = {'left': 3}
+    fresh_snapshot = hw.snapshot
+
+    def snapshot():
+        samples, error = fresh_snapshot()
+        if stale_reads['left'] > 0:
+            stale_reads['left'] -= 1
+            old = time.monotonic() - 1.6
+            samples = {mid: replace(s, received=old, fault_received=old) if mid in (22, 23) else s
+                       for mid, s in samples.items()}
+        return samples, error
+    hw.snapshot = snapshot
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(2,))
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert not worker.faulted, worker.reason
+    assert set(worker.readiness.snapshot()[0]) == {22, 23}
+    assert stale_reads['left'] == 0
+
+
+def test_leg_refuses_with_a_specific_reason(tmp_path, quick_contact):
+    from tocatl_lowlevel.homing import PAIR_FEEDBACK_WAIT_S
+    hw = FakeHardware()
+    hw.samples[23].faults = ('Over current',)
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(2,))
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(5)
+    assert worker.faulted and "motor 23 faults ['Over current']" in worker.reason
+    assert not any(action == 'limit' for _, action, _ in hw.events)  # nothing written
+    hw2 = FakeHardware()
+    fresh = hw2.snapshot
+    hw2.snapshot = lambda: ({mid: replace(s, received=time.monotonic() - 2.0) if mid == 22 else s
+                             for mid, s in fresh()[0].items()}, '')
+    worker2 = HipKneeHoming(hw2, tmp_path/'homes2.json', profiles=profiles(), legs=(2,))
+    hw2.owner = worker2
+    started = time.monotonic()
+    worker2.start()
+    worker2.thread.join(5)
+    assert worker2.faulted and 'motor 22 state age' in worker2.reason
+    assert time.monotonic() - started >= PAIR_FEEDBACK_WAIT_S * 0.9  # waited before refusing
+
+
+def test_finished_search_never_seeks_or_records_another_contact():
+    """2026-11-07: a homing loop that missed the done flag (its last command expired in the
+    CAN lock queue) called update() again; the DONE phase fell through to the seek, pressed
+    the stop again and recorded a second contact, so readiness refused leg 1."""
+    stop, start = .8, 1.8
+    c = KneeSeekConfig.from_start(12, stop, start, direction=-1)
+    seq = KneeSeekSequence(c, start, 0.)
+    position = previous = reference = start
+    torque, now = 0., 0.
+    for tick in range(1, 3001):
+        now = tick*.02
+        position = max(stop, position+max(-.004, min(.004, reference-position)))
+        velocity, previous = (position-previous)/.02, position
+        command = seq.update(position, velocity, torque, now, now)
+        reference = command.position
+        torque = max(-2.625, min(2.625, command.kp*(reference-position)-command.kd*velocity))
+        if seq.done:
+            break
+    assert seq.done and len(seq.result()['contact_positions_rad']) == 1
+    # Keep feeding loaded-looking samples at the stop for longer than a dwell.
+    for tick in range(1, 200):
+        t = now+tick*.02
+        assert seq.update(stop, 0., -2.0, t, t) is None
+    assert seq.phase == 'DONE'
+    assert len(seq.result()['contact_positions_rad']) == 1
+
+
+def test_knee_stage_holds_the_hip_where_it_settled_not_a_stale_snapshot(tmp_path, quick_contact, monkeypatch):
+    """2026-11-07: tripod contention made the post-release hip snapshot stale, so the knee
+    stage's hip reference was >0.01 rad from the fresh hip position and leg 1 refused."""
+    import tocatl_lowlevel.homing as homing
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    hw.owner = worker
+    references = []
+    original = homing.BoundedKneeHoming.__init__
+    def spy(self, hardware, config, output, knee_hip_reference):
+        references.append(knee_hip_reference)
+        original(self, hardware, config, output, knee_hip_reference)
+    monkeypatch.setattr(homing.BoundedKneeHoming, '__init__', spy)
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    assert references == [pytest.approx(hw.samples[12].position)]
+    worker.cancel()
+
+
+def test_unsettled_hip_refuses_the_knee_stage(tmp_path):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    import itertools
+    drift = itertools.count()
+    real = hw.snapshot
+    def drifting():
+        samples, error = real()
+        samples[12] = replace(samples[12], position=samples[12].position+0.01*next(drift))
+        return samples, error
+    hw.snapshot = drifting
+    with pytest.raises(ValueError, match='not settled'):
+        worker._settled_position(12, time.monotonic()-1)
+
+
+def test_hip_stage_uses_the_lower_hip_torque_and_knee_stage_restores_1_5(tmp_path, quick_contact):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,),
+                           hip_torque_limit=0.8, hip_contact_effort=0.5)
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    limits = [(mid, value) for mid, kind, value in hw.events if kind == 'limit']
+    # Hip stage on both pair motors, knee stage back to 1.5, then the originals (12) restored.
+    assert limits[:4] == [(12, 0.8), (13, 0.8), (12, 1.5), (13, 1.5)]
+    assert limits[4:] == [(12, 12.0), (13, 12.0)]
+    worker.cancel()
+
+
+def test_default_hip_stage_uses_0_8_nm_for_the_gearbox(tmp_path, quick_contact):
+    hw = FakeHardware()
+    worker = HipKneeHoming(hw, tmp_path/'homes.json', profiles=profiles(), legs=(1,))
+    assert (worker.hip_torque_limit, worker.hip_contact_effort) == (0.8, 0.5)
+    hw.owner = worker
+    worker.start()
+    worker.thread.join(10)
+    assert not worker.faulted, worker.reason
+    limits = [(mid, value) for mid, kind, value in hw.events if kind == 'limit']
+    assert limits[:4] == [(12, 0.8), (13, 0.8), (12, 1.5), (13, 1.5)]
+    worker.cancel()
+
+
+@pytest.mark.parametrize('limit, effort', ((1.6, 1.0), (0.8, 0.8), (0.8, 0.0), (float('nan'), 0.5)))
+def test_hip_torque_can_only_be_lowered(limit, effort, tmp_path):
+    with pytest.raises(ValueError, match='1.5'):
+        HipKneeHoming(FakeHardware(), tmp_path/'h.json', profiles=profiles(), legs=(1,),
+                      hip_torque_limit=limit, hip_contact_effort=effort)
+    with pytest.raises(ValueError):
+        KneeSeekConfig.from_start(12, .8, 1.8, torque_limit=limit, contact_effort=effort)
+
+
+def drive_to_stop(c, start, stop):
+    """Simulated seek against a rigid stop at ``stop``; returns the sequence."""
+    seq = KneeSeekSequence(c, start, 0.)
+    position = previous = reference = start
+    torque = 0.
+    for tick in range(1, 4001):
+        now = tick*.02
+        step = max(-.004, min(.004, reference-position))
+        position = max(stop, position+step) if c.direction == -1 else min(stop, position+step)
+        velocity, previous = (position-previous)/.02, position
+        command = seq.update(position, velocity, torque, now, now)
+        if command is None:
+            break
+        reference = command.position
+        # Free motion costs 0.2 Nm of friction; at the stop the spring builds up.
+        torque = max(-c.command_torque_limit, min(c.command_torque_limit,
+                     command.kp*(reference-position)-command.kd*velocity))
+        if position != stop:
+            torque = c.direction*0.2
+        if seq.done:
+            break
+    return seq
+
+
+def test_lower_hip_torque_still_finds_the_stop_and_records_the_free_seek_effort():
+    c = KneeSeekConfig.from_start(12, .8, 1.8, direction=-1, torque_limit=0.8, contact_effort=0.5,
+                                  enforce_window=True)
+    seq = drive_to_stop(c, 1.8, .8)
+    assert seq.done
+    result = seq.result()
+    assert result['home_position_rad'] == pytest.approx(.8)
+    assert result['peak_seek_effort_nm'] == pytest.approx(0.2)
+    assert result['contact_effort_nm'] == 0.5
+
+
+def test_enforced_hip_window_refuses_a_stop_that_is_not_the_reference():
+    # Reference 0.8; the leg hits something at 1.2 (not a whole number of rotor turns away).
+    c = KneeSeekConfig.from_start(12, .8, 1.8, direction=-1, torque_limit=0.8, contact_effort=0.5,
+                                  enforce_window=True)
+    with pytest.raises(ValueError, match='outside expected stop window'):
+        drive_to_stop(c, 1.8, 1.2)
+    # A stop a whole rotor turn away (power-cycle shift) is the same stop: accepted.
+    from tocatl_lowlevel.homing import ROTOR_TURN_RAD
+    seq = drive_to_stop(c, 1.8+ROTOR_TURN_RAD, .8+ROTOR_TURN_RAD)
+    assert seq.done
+    # Knees (enforce_window False) keep normal mode's report-only behaviour.
+    knee = KneeSeekConfig.from_start(13, .8, 1.8, direction=-1)
+    assert drive_to_stop(knee, 1.8, 1.2).result()['reference_within_window'] is False
+
+
+def test_hip_window_can_be_switched_to_report_only(tmp_path, quick_contact):
+    hw = FakeHardware()
+    configs = []
+    import tocatl_lowlevel.homing as homing
+    original = homing.KneeSeekConfig.from_start.__func__
+    def spy(cls, *args, **kwargs):
+        config = original(cls, *args, **kwargs)
+        configs.append(config)
+        return config
+    for enforce, expected in ((True, [True, False]), (False, [False, False])):
+        configs.clear()
+        worker = HipKneeHoming(hw, tmp_path/f'h{enforce}.json', profiles=profiles(), legs=(1,),
+                               enforce_hip_window=enforce)
+        hw.owner = worker
+        homing.KneeSeekConfig.from_start = classmethod(spy)
+        try:
+            worker.start()
+            worker.thread.join(10)
+        finally:
+            homing.KneeSeekConfig.from_start = classmethod(original)
+        assert not worker.faulted, worker.reason
+        assert [c.enforce_window for c in configs] == expected
+        worker.cancel()
+    with pytest.raises(ValueError, match='true or false'):
+        HipKneeHoming(hw, tmp_path/'x.json', profiles=profiles(), legs=(1,), enforce_hip_window='no')
+
+
+def test_leg_status_publishes_the_declared_yaw_reference(tmp_path):
+    """tocatl_walk builds each leg's references from robot_state legs; without the yaw it
+    refused every leg (2026-11-07)."""
+    pytest.importorskip('rclpy')
+    from tocatl_interfaces.msg import RobotState
+    from tocatl_lowlevel.motor_controller import MotorController
+    readiness = LegReadiness()
+    readiness.homes.update({12: .8, 13: .7, 22: .6, 23: .5})
+    readiness.yaw.update({11: .1})
+    state = RobotState()
+    hw = FakeHardware()
+    node = NS(homing=None, motion=None, hardware=hw, readiness=NS(
+        check=lambda hardware: True, snapshot=readiness.snapshot, leg_reason=readiness.leg_reason,
+        invalidate=readiness.invalidate))
+    MotorController.add_leg_status(node, state)
+    leg1, leg2 = state.legs[0], state.legs[1]
+    assert (leg1.scope, list(leg1.motor_ids), list(leg1.home_positions_rad)) == ('pitch_knee_yaw', [11, 12, 13], [.1, .8, .7])
+    assert (leg2.scope, list(leg2.motor_ids), list(leg2.home_positions_rad)) == ('pitch_knee', [22, 23], [.6, .5])
+    assert not state.legs[2].homed and list(state.legs[2].motor_ids) == [32, 33]

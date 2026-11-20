@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from tocatl_lowlevel.motor_commands import MotorCommands, HardwareMotion
 
 from tocatl_lowlevel.motor_commands import JOINT_NAMES, MockMotors
-from tocatl_lowlevel.motor_map import MOTORS, hip_knee_ids
+from tocatl_lowlevel.motor_map import CAN_BUSES, MOTORS, hip_knee_ids
 from tocatl_lowlevel.homing import LegReadiness
 
 
@@ -34,14 +34,17 @@ class MotorController(Node):
             max_kp=self.declare_parameter('max_motor_kp', 5.0).value,
             max_kd=self.declare_parameter('max_motor_kd', 1.0).value,
             max_step=self.declare_parameter('max_position_step_rad', 0.1).value,
-            motor_ids=self.declare_parameter('actuation_motor_ids', [m.motor_id for m in MOTORS]).value)
+            motor_ids=self.declare_parameter('actuation_motor_ids', [m.motor_id for m in MOTORS]).value,
+            home_offsets={joint: bounds for joint in ('hip_yaw', 'hip_pitch', 'knee')
+                          if (bounds := self.declare_parameter(f'{joint}_home_offset_rad', [0.0]).value) != [0.0]},
+            homes=lambda: self.readiness.snapshot()[0])
         if backend == 'hardware':
             from tocatl_lowlevel.hardware import HardwareTelemetry
-            buses = self.declare_parameter('can_buses', ['can0', 'can1']).value
-            if not buses or len(set(buses)) != len(buses) or any(b not in ('can0', 'can1') for b in buses):
+            buses = self.declare_parameter('can_buses', list(CAN_BUSES)).value
+            if not buses or len(set(buses)) != len(buses) or any(b not in CAN_BUSES for b in buses):
                 raise ValueError('can_buses must select unique known CAN buses')
             channels = {name: self.declare_parameter(name + '_channel', name).value
-                        for name in ('can0', 'can1')}
+                        for name in CAN_BUSES}
             self.hardware = HardwareTelemetry(
                 lambda: self.get_clock().now().to_msg(),
                 {name: channels[name] for name in buses},
@@ -49,10 +52,26 @@ class MotorController(Node):
                 stale_after=self.declare_parameter('telemetry_timeout_s', 1.0).value,
                 motor_id_overrides={12: self.declare_parameter('leg1_hip_can_id', 12).value},
                 motor_ids=self.declare_parameter(
-                    'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value)
+                    'telemetry_motor_ids', [m.motor_id for m in MOTORS if m.bus in buses]).value,
+                verify_wiring=self.declare_parameter('verify_can_wiring', True).value,
+                transport=self.declare_parameter('can_transport', 'v1').value)
+            self.get_logger().info(f'CAN transport {self.hardware.transport}')
+            wiring = self.hardware.wiring
+            if wiring is not None:
+                self.get_logger().info('CAN wiring check: ' + ', '.join(
+                    f'{bus}: {sorted(m for m, b in wiring["answered"].items() if bus in b)}'
+                    for bus in buses))
+                if wiring['silent']:
+                    self.get_logger().warning(f'No get-ID reply from motors {wiring["silent"]}: '
+                                              'unpowered, unwired, or a different CAN ID')
+        torque_limit = self.declare_parameter('motion_torque_limit_nm', 0.0).value
         self.motion = (HardwareMotion(self.hardware, self.commands,
                        self.declare_parameter('allow_hardware_motion', False).value,
-                       readiness_check=lambda targets: self.readiness.require(self.hardware, targets))
+                       readiness_check=lambda targets: self.readiness.require(self.hardware, targets),
+                       torque_limit=torque_limit or None,
+                       control_period=self.declare_parameter('control_period_s', 0.02).value,
+                       fault_response=self.declare_parameter('fault_response', 'disable').value,
+                       soften_s=self.declare_parameter('fault_soften_s', 3.0).value)
                        if self.hardware is not None else None)
         self.homing = None
         self.homing_was_active = False
@@ -66,9 +85,21 @@ class MotorController(Node):
             elif self.motion.allowed:
                 raise ValueError('Combined homing/actuation requires homing.method=hip_knee')
             self.homing_service = self.create_service(Trigger, 'motors/home', self.home)
+            if hasattr(self.homing, 'readiness'):
+                self.yaw_reference_service = self.create_service(
+                    Trigger, 'motors/declare_yaw_reference', self.declare_yaw_reference)
             self.leg_homing_services = [
                 self.create_service(Trigger, f'motors/leg_{leg}/home', partial(self.home, leg_id=leg))
                 for leg in getattr(self.homing, 'leg_ids', ())]
+            # One tripod at a time (motors/home runs both, 1/3/5 then 2/4/6), e.g. motors/tripod_135/home.
+            from tocatl_lowlevel.homing import TRIPODS
+            leg_ids = getattr(self.homing, 'leg_ids', ())
+            tripods = [tuple(leg for leg in tripod if leg in leg_ids) for tripod in TRIPODS]
+            self.tripod_homing_services = [
+                self.create_service(Trigger, f'motors/tripod_{"".join(map(str, tripod))}/home',
+                                    partial(self.home, legs=tripod))
+                for tripod in tripods if tripod]
+        self.readiness.log = lambda message: self.get_logger().warning(message)
         self.motor_subscription = self.create_subscription(
             MotorCommand, 'motor_command', self.motor_command,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -116,20 +147,42 @@ class MotorController(Node):
         response.message = 'Mock motors enabled' if request.data else 'Mock motors disabled'
         return response
 
-    def home(self, request, response, leg_id=None):
+    def home(self, request, response, leg_id=None, legs=None):
         try:
             with self.motion.lock:
                 if self.motion.requested or self.motion.armed or self.motion.stop_pending:
                     raise ValueError('Disarm and confirm stopped motors before homing')
             self.commands.clear()
-            if leg_id is None:
+            if legs is not None:
+                self.homing.start(list(legs))
+            elif leg_id is None:
                 self.homing.start()
             else:
                 self.homing.start([leg_id])
             self.homing_was_active = True
-            selection = f'leg {leg_id}' if leg_id is not None else 'configured legs'
+            selection = (f'legs {"/".join(map(str, legs))}' if legs is not None else
+                         f'leg {leg_id}' if leg_id is not None else 'configured legs (tripods 1/3/5, then 2/4/6)')
             self.get_logger().info(f'Homing started for {selection}')
             response.success, response.message = True, 'Homing requested'
+        except ValueError as error:
+            response.success, response.message = False, str(error)
+        return response
+
+    def declare_yaw_reference(self, request, response):
+        """Record the actuated yaw motors' current positions as this session's yaw references."""
+        try:
+            with self.motion.lock:
+                if self.motion.requested or self.motion.armed or self.motion.stop_pending:
+                    raise ValueError('Disarm and confirm stopped motors before declaring yaw references')
+            if self.homing.active:
+                raise ValueError('Wait for homing to finish')
+            yaw_ids = [mid for mid in self.commands.motor_ids if mid % 10 == 1]
+            if not yaw_ids:
+                raise ValueError('No yaw motors are actuated in this session')
+            positions = self.readiness.declare_yaw(self.hardware, yaw_ids)
+            message = 'Yaw references declared: ' + ', '.join(f'{mid} {pos:+.4f}' for mid, pos in sorted(positions.items()))
+            self.get_logger().info(message)
+            response.success, response.message = True, message
         except ValueError as error:
             response.success, response.message = False, str(error)
         return response
@@ -170,11 +223,15 @@ class MotorController(Node):
                 active = self.homing.active
                 if self.homing_was_active and not active:
                     _, failed, message = self.homing.status()
-                    log = self.get_logger().error if failed else self.get_logger().info
-                    log(message)
+                    # Separate call sites: rclpy rejects one call site logging at two severities.
+                    if failed:
+                        self.get_logger().error(message)
+                    else:
+                        self.get_logger().info(message)
                 self.homing_was_active = active
             state = build_hardware_state(self.hardware, self.get_clock().now().to_msg(),
                                          self.sequence, self.body_frame)
+            self.log_motion_fault()
             armed, faulted, reason = self.motion.status()
             if self.homing is not None and (self.homing.active or self.homing.status()[1] or
                                             not hasattr(self.homing, 'readiness')) and not armed:
@@ -206,20 +263,42 @@ class MotorController(Node):
         self.state_publisher.publish(state)
         self.sequence += 1
 
+    def log_motion_fault(self):
+        """Log each new motion fault once, with its reason (it was only in robot_state)."""
+        motion = getattr(self, 'motion', None)
+        count = getattr(motion, 'fault_count', 0) if motion is not None else 0
+        if count != getattr(self, 'logged_fault_count', 0):
+            self.logged_fault_count = count
+            _, faulted, reason = motion.status()
+            if faulted:
+                self.get_logger().error(f'Motion fault: {reason}')
+
     def add_leg_status(self, state):
         homing = getattr(self, 'homing', None)
         motion = getattr(self, 'motion', None)
         homing_fault = homing is not None and homing.status()[1]
         motion_fault = motion is not None and motion.status()[1]
-        if state.safety_state == RobotState.FAULT and (motion_fault or not homing_fault):
+        # A motion fault stays latched until the next arm. Clear readiness once per new
+        # fault, not on every update: otherwise legs homed after the fault were cleared
+        # again within 20 ms, and since arming needs READY legs only a restart recovered
+        # (2026-10-27 15:41).
+        fault_count = getattr(motion, 'fault_count', 0) if motion is not None else 0
+        if (state.safety_state == RobotState.FAULT and (motion_fault or not homing_fault) and
+                fault_count != getattr(self, 'readiness_cleared_for_fault', None)):
             self.readiness.invalidate(f'Controller fault: {state.status_reason}; rehome required')
+            self.readiness_cleared_for_fault = fault_count
         ready = self.hardware is not None and self.readiness.check(self.hardware)
         homes, _ = self.readiness.snapshot()
         for leg_id in range(1, 7):
             leg = LegState()
-            leg.leg_id, leg.scope = leg_id, 'pitch_knee'
-            leg.motor_ids = list(hip_knee_ids(leg_id))
-            leg.homed = all(mid in homes for mid in leg.motor_ids)
+            # 'pitch_knee_yaw' once this session also holds a declared yaw reference for the leg.
+            yaw_id = leg_id * 10 + 1
+            leg.leg_id, leg.scope = leg_id, 'pitch_knee_yaw' if yaw_id in homes else 'pitch_knee'
+            leg.homed = all(mid in homes for mid in hip_knee_ids(leg_id))
+            # With a declared yaw, publish it too ([yaw, hip, knee] and their references):
+            # walking needs every joint's session reference (2026-11-07: tocatl_walk refused
+            # 'Every walking leg needs measured yaw, hip and knee with session references').
+            leg.motor_ids = ([yaw_id] if leg.homed and yaw_id in homes else []) + list(hip_knee_ids(leg_id))
             leg.ready = bool(ready and leg.homed)
             leg.home_positions_rad = [homes[mid] for mid in leg.motor_ids] if leg.homed else []
             leg.status_reason = self.readiness.leg_reason(leg_id)

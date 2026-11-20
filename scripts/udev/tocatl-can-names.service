@@ -1,0 +1,11 @@
+[Unit]
+Description=Pin TOCATL CAN adapter names by USB serial number
+
+[Service]
+Type=oneshot
+# Let all adapters appear first: they enumerate within the same second.
+ExecStartPre=/bin/sleep 1
+ExecStart=/usr/local/sbin/tocatl-can-names
+
+[Install]
+WantedBy=multi-user.target

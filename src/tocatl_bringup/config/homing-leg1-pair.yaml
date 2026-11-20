@@ -8,9 +8,9 @@ motor_controller:
     # Powered homing is opt-in; a saved result never restores session readiness.
     allow_homing: false
     actuation_motor_ids: [12, 13]
-    # Restrict telemetry too: wider can1 polling reproduced the ID-51 stall.
+    # Restrict telemetry too: wider polling on 51's bus reproduced the ID-51 stall.
     telemetry_motor_ids: [12, 13]
-    can_buses: [can1]
+    can_buses: [can0]
     can0_channel: can0
     can1_channel: can1
     leg1_hip_can_id: 12

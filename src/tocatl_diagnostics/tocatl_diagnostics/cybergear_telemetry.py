@@ -174,7 +174,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--live", action="store_true", help="Send read-only CAN requests")
     parser.add_argument("--interface", default="socketcan")
     parser.add_argument("--channel", default="can0")
-    parser.add_argument("--bus", choices=("can0", "can1"), default="can0")
+    parser.add_argument("--bus", choices=("can0", "can1", "can2"), default="can0")
     parser.add_argument("--bitrate", type=int, default=CAN_BITRATE)
     parser.add_argument("--delay-s", type=float, default=0.2)
     parser.add_argument("--csv", type=Path, help="Write telemetry snapshots to CSV")

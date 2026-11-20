@@ -1,0 +1,43 @@
+diff --git a/src/tocatl_kinematics/test/test_walk.py b/src/tocatl_kinematics/test/test_walk.py
+index b1cf9a3..0e4ef85 100644
+--- a/src/tocatl_kinematics/test/test_walk.py
++++ b/src/tocatl_kinematics/test/test_walk.py
+@@ -99,3 +99,9 @@ def test_invalid_parameters_refused():
+     for bad in (dict(gait='gallop'), dict(period_s=0.1), dict(step_height_m=0.5), dict(max_stride_m=0.0)):
+         with pytest.raises(ValueError):
+             WalkParams(**bad).validate()
++
++
++def test_override_flag_defaults_off():
++    from tocatl_kinematics.walk_player import build_parser
++    assert not build_parser().parse_args([]).override
++    assert build_parser().parse_args(['--override']).override
+diff --git a/src/tocatl_kinematics/tocatl_kinematics/walk_player.py b/src/tocatl_kinematics/tocatl_kinematics/walk_player.py
+index 1e1f0db..678e9d6 100644
+--- a/src/tocatl_kinematics/tocatl_kinematics/walk_player.py
++++ b/src/tocatl_kinematics/tocatl_kinematics/walk_player.py
+@@ -388,6 +388,9 @@ def build_parser():
+     parser.add_argument('--geometry', default='config/robot-geometry.json')
+     parser.add_argument('--joint-map', default='config/joint-map.json')
+     parser.add_argument('--dry-run', action='store_true')
++    parser.add_argument('--override', action='store_true',
++                        help='walk despite planner violations (printed as warnings); the controller '
++                             'still enforces its own envelope, step, speed and torque limits')
+     return parser
+ 
+ 
+@@ -508,8 +511,13 @@ def main(argv=None):
+                                            torque_limit_nm=limits.torque_limit, yaw_envelope=limits.offsets.hip_yaw)
+         print(json.dumps(report, indent=1, default=float), flush=True)
+         problems = report['violations'] + report['blend']['problems'] + report['yaw_not_radial']
++        if problems and not args.override:
++            raise ValueError('Walk rejected: ' + '; '.join(problems[:6]) +
++                             ' (rerun with --override to walk anyway)')
+         if problems:
+-            raise ValueError('Walk rejected: ' + '; '.join(problems[:6]))
++            print(f'OVERRIDE: walking despite {len(problems)} problem(s):', flush=True)
++            for problem in problems:
++                print(f'  - {problem}', flush=True)
+         if args.dry_run:
+             print('Dry run: nothing published.', flush=True)
+             return 0
